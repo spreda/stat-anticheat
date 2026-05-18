@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+{% extends "base.html" %}
+{% block title %}Загрузка матча - CS2 Анализатор Античита{% endblock %}
+{% block content %}
+<h1>Загрузка матча</h1>
+<p>Загрузите файл матча (.parquet) для анализа.</p>
+
+<form id="uploadForm" enctype="multipart/form-data">
+    <div class="drop-zone" id="dropZone">
+        <p>Перетащите .parquet файл сюда или нажмите для выбора</p>
+        <input type="file" id="fileInput" name="file" accept=".parquet" required>
+    </div>
+    <div id="fileInfo"></div>
+    <button type="submit" id="submitBtn" disabled>Анализировать матч</button>
+</form>
+
+<div id="status" class="hidden">
+    <div class="progress-container">
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+            <span class="progress-text" id="progressText">0%</span>
+        </div>
+    </div>
+    <p id="statusText">Загрузка файла...</p>
+    <p id="jobId"></p>
+</div>
+
+<div id="result" class="hidden">
+    <p>Анализ завершен.</p>
+    <p><a id="reportLink" href="#">Открыть отчет</a></p>
+</div>
+
+<script>
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileInfo = document.getElementById('fileInfo');
+    const submitBtn = document.getElementById('submitBtn');
+    const form = document.getElementById('uploadForm');
+    const status = document.getElementById('status');
+    const result = document.getElementById('result');
+    const reportLink = document.getElementById('reportLink');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    const statusText = document.getElementById('statusText');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length) {
+            fileInput.files = files;
+            updateFileInfo(files[0]);
+        }
+    });
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) updateFileInfo(fileInput.files[0]);
+    });
+
+    function updateFileInfo(file) {
+        fileInfo.textContent = `Выбран: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} МБ)`;
+        submitBtn.disabled = false;
+    }
+
+    function setProgress(percent, text) {
+        progressFill.style.width = percent + '%';
+        progressText.textContent = percent + '%';
+        if (text) statusText.textContent = text;
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(form);
+        formData.append('metadata', JSON.stringify({}));
+
+        submitBtn.disabled = true;
+        status.classList.remove('hidden');
+        result.classList.add('hidden');
+        setProgress(10, 'Загрузка файла...');
+
+        try {
+            const res = await fetch('/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.error) {
+                alert(data.error);
+                submitBtn.disabled = false;
+                status.classList.add('hidden');
+                return;
+            }
+            setProgress(30, 'Извлечение признаков...');
+            document.getElementById('jobId').textContent = `ID задания: ${data.job_id}`;
+            pollStatus(data.job_id);
+        } catch (err) {
+            alert('Ошибка загрузки: ' + err.message);
+            submitBtn.disabled = false;
+            status.classList.add('hidden');
+        }
+    });
+
+    function pollStatus(jobId) {
+        const interval = setInterval(async () => {
+            const res = await fetch(`/job/${jobId}`);
+            const data = await res.json();
+            if (data.status === 'processing') {
+                setProgress(60, 'Анализ...');
+            } else if (data.status === 'done') {
+                clearInterval(interval);
+                setProgress(100, 'Готово');
+                setTimeout(() => {
+                    status.classList.add('hidden');
+                    result.classList.remove('hidden');
+                    reportLink.href = `/report/${jobId}`;
+                }, 500);
+            } else if (data.status === 'error') {
+                clearInterval(interval);
+                setProgress(0, 'Ошибка');
+                alert('Ошибка: ' + (data.result?.message || 'Неизвестная ошибка'));
+                submitBtn.disabled = false;
+            }
+        }, 1500);
+    }
+</script>
+{% endblock %}

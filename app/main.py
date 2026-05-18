@@ -1,0 +1,301 @@
+"""
+FastAPI backend for CS2 Anti-Cheat Analyzer.
+"""
+import sys
+from pathlib import Path
+
+# Allow running main.py from inside the app directory
+_app_root = Path(__file__).resolve().parent.parent
+if str(_app_root) not in sys.path:
+    sys.path.insert(0, str(_app_root))
+
+from fastapi import FastAPI, Request, UploadFile, File, Form, BackgroundTasks, Query
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import shutil
+import uuid
+import json
+from datetime import datetime
+
+from app.services.analyzer import analyze_match, extract_match_info, load_model
+from app.services.dataset_browser import list_all_matches, get_match_info
+from app.services.cache import load_cached, save_cached
+from app.db import init_db, get_job, create_job, get_job_stats
+
+BASE_DIR = Path(__file__).parent
+UPLOADS_DIR = BASE_DIR.parent / "uploads"
+UPLOADS_DIR.mkdir(exist_ok=True)
+
+DATASET_DIR = BASE_DIR.parent / "datasets" / "cs2cd_dataset"
+
+app = FastAPI(title="CS2 Anti-Cheat Analyzer", version="1.0")
+
+# Static files
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+# Manual Jinja2 rendering to avoid Python 3.14 cache bug
+from jinja2 import Environment, FileSystemLoader
+_jinja_env = Environment(loader=FileSystemLoader(str(BASE_DIR / "templates")))
+
+def render_template(name: str, context: dict) -> str:
+    template = _jinja_env.get_template(name)
+    return template.render(**context)
+
+
+@app.on_event("startup")
+async def startup():
+    init_db()
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return HTMLResponse(render_template("upload.html", {"request": request, "active_page": "upload"}))
+
+
+@app.post("/upload")
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    metadata: str = Form("{}"),
+):
+    """Upload a match file for analysis."""
+    # Validate
+    if not file.filename.endswith(".parquet"):
+        return JSONResponse({"error": "Only .parquet files accepted"}, status_code=400)
+
+    job_id = str(uuid.uuid4())
+    job_dir = UPLOADS_DIR / job_id
+    job_dir.mkdir(exist_ok=True)
+
+    # Save file
+    file_path = job_dir / "match.parquet"
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Save metadata
+    meta_path = job_dir / "metadata.json"
+    with open(meta_path, "w") as f:
+        json.dump({"original_name": file.filename, "uploaded_at": datetime.utcnow().isoformat(), "user_metadata": json.loads(metadata)}, f)
+
+    # Create job record
+    create_job(job_id, str(file_path), file.filename)
+
+    # Queue analysis
+    background_tasks.add_task(analyze_match, job_id, str(file_path))
+
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/job/{job_id}")
+async def get_job_status(job_id: str):
+    """Get job status and results."""
+    job = get_job(job_id)
+    if not job:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "filename": job["filename"],
+        "created_at": job["created_at"],
+        "result": json.loads(job["result"]) if job["result"] else None,
+    }
+
+
+@app.get("/report/{job_id}", response_class=HTMLResponse)
+async def report_page(request: Request, job_id: str):
+    """Show analysis report page."""
+    job = get_job(job_id)
+    if not job:
+        return HTMLResponse(render_template("error.html", {"request": request, "message": "Job not found"}))
+
+    result = json.loads(job["result"]) if job["result"] else None
+    from app.ml.features import FEATURE_EXPLANATIONS
+    return HTMLResponse(render_template("report.html", {
+        "request": request,
+        "job": job,
+        "result": result,
+        "feature_explanations": FEATURE_EXPLANATIONS,
+        "active_page": "upload",
+    }))
+
+
+# ─────────────────────────────────────────
+# Dataset routes
+# ─────────────────────────────────────────
+
+@app.get("/dataset", response_class=HTMLResponse)
+async def dataset_page(
+    request: Request,
+    filter_type: str = Query("all", alias="type"),
+    page: int = Query(1),
+):
+    """Browse dataset matches."""
+    data = list_all_matches(filter_type=filter_type, page=page, per_page=24)
+
+    # Cache check
+    for m in data["matches"]:
+        m["cached"] = load_cached(m["folder"], m["idx"]) is not None
+
+    return HTMLResponse(render_template("dataset.html", {
+        "request": request,
+        "matches": data["matches"],
+        "filter_type": filter_type,
+        "page": data["page"],
+        "total_pages": data["total_pages"],
+        "total_matches": data["total_matches"],
+        "clean_count": data["clean_count"],
+        "cheat_count": data["cheat_count"],
+        "active_page": "dataset",
+    }))
+
+
+@app.get("/analyze-dataset/{folder}/{idx}")
+async def analyze_dataset(
+    folder: str,
+    idx: int,
+    background_tasks: BackgroundTasks,
+):
+    """Analyze a dataset match — redirect immediately, process in background."""
+    if folder not in ("no_cheater_present", "with_cheater_present"):
+        return JSONResponse({"error": "Invalid folder"}, status_code=400)
+
+    cached = load_cached(folder, idx)
+    if cached:
+        return RedirectResponse(url=f"/report-dataset/{folder}/{idx}")
+
+    job_id = str(uuid.uuid4())
+    file_path = DATASET_DIR / folder / f"{idx}.parquet"
+    if not file_path.exists():
+        return JSONResponse({"error": "Match file not found"}, status_code=404)
+
+    create_job(job_id, str(file_path), f"dataset:{folder}/{idx}")
+
+    def _analyze_and_cache():
+        # Read JSON metadata for events
+        json_path = DATASET_DIR / folder / f"{idx}.json"
+        events = {}
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                events = json.load(f)
+        except Exception:
+            events = {"cheaters": []}
+
+        # Build match info and analyze
+        import pandas as pd
+        tick_df = pd.read_parquet(file_path)
+        match_info = extract_match_info(tick_df, events, folder, idx)
+        analyze_match(job_id, str(file_path), events=events, match_info=match_info)
+
+        # Save to cache after analysis
+        job = get_job(job_id)
+        if job and job.get("result"):
+            try:
+                result = json.loads(job["result"])
+                if result.get("status") == "done":
+                    save_cached(folder, idx, result)
+            except Exception:
+                pass
+
+    background_tasks.add_task(_analyze_and_cache)
+
+    return RedirectResponse(url=f"/report-dataset/{folder}/{idx}?job={job_id}")
+
+
+@app.get("/report-dataset/{folder}/{idx}", response_class=HTMLResponse)
+async def report_dataset_page(request: Request, folder: str, idx: int, job: str = Query(None)):
+    """Show report for a dataset match — cached or polling."""
+    result = load_cached(folder, idx)
+    if result:
+        from app.ml.features import FEATURE_EXPLANATIONS
+        return HTMLResponse(render_template("report.html", {
+            "request": request,
+            "job": {"filename": f"dataset:{folder}/{idx}", "status": "done", "id": "cached"},
+            "result": result,
+            "feature_explanations": FEATURE_EXPLANATIONS,
+            "active_page": "dataset",
+        }))
+
+    # If job provided and not done yet, show polling page
+    if job:
+        job_row = get_job(job)
+        if job_row:
+            status = job_row.get("status", "pending")
+            if status == "done" and job_row.get("result"):
+                # Analysis just finished — reload cached result
+                result = load_cached(folder, idx)
+                if result:
+                    from app.ml.features import FEATURE_EXPLANATIONS
+                    return HTMLResponse(render_template("report.html", {
+                        "request": request,
+                        "job": {"filename": f"dataset:{folder}/{idx}", "status": "done", "id": job},
+                        "result": result,
+                        "feature_explanations": FEATURE_EXPLANATIONS,
+                        "active_page": "dataset",
+                    }))
+            return HTMLResponse(render_template("polling.html", {
+                "request": request,
+                "job_id": job,
+                "redirect_url": f"/report-dataset/{folder}/{idx}?job={job}",
+                "active_page": "dataset",
+            }))
+
+    # No job and no cache — redirect to dataset
+    return RedirectResponse(url="/dataset")
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    """System settings and model info."""
+    stats = get_job_stats()
+    data = list_all_matches(filter_type="all", page=1, per_page=1)
+    stats["total_matches"] = data["clean_count"] + data["cheat_count"]
+    stats["clean_matches"] = data["clean_count"]
+    stats["cheat_matches"] = data["cheat_count"]
+
+    # Model info
+    artifact = load_model()
+    model_info = None
+    if artifact:
+        top = artifact.get("feature_importances", {})
+        if isinstance(top, dict) and top:
+            max_imp = max(top.values())
+            top_features = sorted(
+                [{"name": k, "importance": round(v, 4), "importance_percent": round(v / max_imp * 100, 1)} for k, v in top.items()],
+                key=lambda x: x["importance"],
+                reverse=True,
+            )[:5]
+        else:
+            top_features = []
+        model_info = {
+            "algorithm": artifact.get("algorithm", "XGBoost"),
+            "version": artifact.get("version", "v1"),
+            "n_features": len(artifact.get("feature_names", [])),
+            "threshold": artifact.get("threshold", 0.5),
+            "trained_at": artifact.get("trained_at", "?"),
+            "top_features": top_features,
+        }
+
+    settings = {
+        "threshold": 0.5,
+        "min_risk_display": 0,
+        "cache_enabled": True,
+        "locked": True,
+    }
+
+    from app.ml.features import FEATURE_EXPLANATIONS
+
+    return HTMLResponse(render_template("settings.html", {
+        "request": request,
+        "stats": stats,
+        "model_info": model_info,
+        "settings": settings,
+        "feature_explanations": FEATURE_EXPLANATIONS,
+        "active_page": "settings",
+    }))
+
+
+@app.get("/api/docs")
+async def api_docs():
+    """Redirect to auto-generated docs."""
+    return {"docs": "/docs"}

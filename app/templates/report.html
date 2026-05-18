@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+{% extends "base.html" %}
+{% block title %}Отчет по матчу - CS2 Анализатор Античита{% endblock %}
+{% block content %}
+<h1>Отчет по матчу</h1>
+<p>Задание: {{ job.id }} | Статус: <span class="status-{{ job.status }}">{{ job.status }}</span></p>
+
+{% if result %}
+    {% if result.model_loaded %}
+        <div class="summary">
+            <h2>Сводка</h2>
+            <div class="summary-grid">
+                <div class="summary-card">
+                    <span class="summary-value">{{ result.summary.total_players }}</span>
+                    <span class="summary-label">Игроков</span>
+                </div>
+                <div class="summary-card flagged-card">
+                    <span class="summary-value">{{ result.summary.flagged_players }}</span>
+                    <span class="summary-label">Подозрительных</span>
+                </div>
+                <div class="summary-card">
+                    <span class="summary-value">{{ result.summary.avg_risk }}</span>
+                    <span class="summary-label">Средний риск</span>
+                </div>
+                <div class="summary-card danger-card">
+                    <span class="summary-value">{{ result.summary.max_risk }}</span>
+                    <span class="summary-label">Макс. риск</span>
+                </div>
+            </div>
+        </div>
+
+        {% if result.match_info %}
+        <div class="match-info">
+            <h2>Информация о матче</h2>
+            <p><strong>Карта:</strong> {{ result.match_info.map or 'Неизвестно' }}</p>
+            <p><strong>Раундов:</strong> {{ result.match_info.rounds or '-' }}</p>
+            <p><strong>Длительность:</strong> {{ result.match_info.duration or '-' }}</p>
+            <p><strong>Счет:</strong> {{ result.match_info.score or '-' }}</p>
+            <p class="match-narrative">{{ result.match_info.narrative or '' }}</p>
+        </div>
+        {% endif %}
+
+        <h2>Рейтинг риска игроков</h2>
+        <div class="legend">
+            <span class="legend-item"><span class="legend-color" style="background:#2ecc71"></span> Низкий 0-40</span>
+            <span class="legend-item"><span class="legend-color" style="background:#f39c12"></span> Средний 41-70</span>
+            <span class="legend-item"><span class="legend-color" style="background:#e74c3c"></span> Высокий 71-100</span>
+        </div>
+        <table class="risk-table" id="riskTable">
+            <thead>
+                <tr>
+                    <th class="sortable" data-sort="name" title="Идентификатор игрока">Игрок</th>
+                    <th class="sortable" data-sort="risk" title="Вероятность читерства, 0-100">Риск</th>
+                    <th data-sort="flag" title="Превышен порог подозрения">Подозрение</th>
+                    <th class="sortable" data-sort="kdr" title="combat_kdr: соотношение убийств к смертям">KDR</th>
+                    <th class="sortable" data-sort="hs" title="combat_headshot_ratio: доля убийств в голову">Доля хедшотов</th>
+                    <th class="sortable" data-sort="damage" title="combat_damage_per_round: средний урон за раунд">Урон за раунд</th>
+                    <th class="sortable" data-sort="yaw" title="aim_yaw_delta_std: стандартное отклонение угла поворота">Плавность прицела</th>
+                    <th class="sortable" data-sort="mouse" title="aim_mouse_mag_mean: средняя амплитуда движения мыши">Движение мыши</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for player in result.players %}
+                <tr class="player-row {% if player.flagged %}flagged{% endif %}" data-risk="{{ player.risk_score }}" data-kdr="{{ player.features.kdr }}" data-hs="{{ player.features.headshot_ratio }}" data-damage="{{ player.features.damage_per_round }}" data-yaw="{{ player.features.aim_yaw_std }}" data-mouse="{{ player.features.mouse_mag_mean }}">
+                    <td>{{ player.steamid }}</td>
+                    <td>
+                        <div class="risk-bar" title="Вероятность читерства: {{ (player.confidence * 100) | round(1) }}%">
+                            <div class="risk-fill" style="width: {{ player.risk_score }}%; background: {% if player.risk_score > 70 %}#e74c3c{% elif player.risk_score > 40 %}#f39c12{% else %}#2ecc71{% endif %}"></div>
+                            <span>{{ player.risk_score }}</span>
+                        </div>
+                    </td>
+                    <td>{% if player.flagged %}да{% else %}нет{% endif %}</td>
+                    <td class="{% if player.features.kdr > 3 %}highlight{% endif %}">{{ player.features.kdr }}</td>
+                    <td class="{% if player.features.headshot_ratio > 0.7 %}highlight{% endif %}">{{ player.features.headshot_ratio }}</td>
+                    <td class="{% if player.features.damage_per_round > 150 %}highlight{% endif %}">{{ player.features.damage_per_round }}</td>
+                    <td class="{% if player.features.aim_yaw_std < 1.0 %}highlight{% endif %}">{{ player.features.aim_yaw_std }}</td>
+                    <td class="{% if player.features.mouse_mag_mean < 3 %}highlight{% endif %}">{{ player.features.mouse_mag_mean }}</td>
+                </tr>
+                {% if player.top_factors or player.shap %}
+                <tr class="factors-row collapsed" id="factors-{{ loop.index }}">
+                    <td colspan="8">
+                        {% if player.shap and (player.shap.positive or player.shap.negative) %}
+                        <div class="shap-section">
+                            <div class="shap-group">
+                                <span class="shap-label shap-pos">Повышают риск:</span>
+                                {% for c in player.shap.positive %}
+                                <span class="factor-tag factor-pos" title="{{ feature_explanations.get(c.raw_feature, c.feature) }}">{{ c.feature }} +{{ c.value }}</span>
+                                {% endfor %}
+                            </div>
+                            <div class="shap-group">
+                                <span class="shap-label shap-neg">Снижают риск:</span>
+                                {% for c in player.shap.negative %}
+                                <span class="factor-tag factor-neg" title="{{ feature_explanations.get(c.raw_feature, c.feature) }}">{{ c.feature }} {{ c.value }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if player.top_factors %}
+                        <div class="player-factors">
+                            {% for factor in player.top_factors %}
+                            <span class="factor-tag" title="{{ factor.explanation }}">{{ factor.name }} {{ factor.value }}</span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if result.match_events %}
+        <div class="match-events">
+            <h2>События матча</h2>
+            <div class="events-log" id="eventsLog">
+                {% for event in result.match_events %}
+                {% if event.type == 'separator' %}
+                <div class="event-separator" style="height: {{ event.height }}px;"></div>
+                {% else %}
+                <div class="event-item {{ event.type }}">
+                    <span class="event-time">{{ event.time or '' }}</span>
+                    <span class="event-desc">{{ event.description }}</span>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    {% else %}
+        <div class="warning">
+            <p>{{ result.message }}</p>
+        </div>
+    {% endif %}
+{% else %}
+    <p>Результаты пока недоступны.</p>
+{% endif %}
+
+<p><a href="/">← Загрузить другой матч</a></p>
+
+<script>
+// Table sorting functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const table = document.getElementById('riskTable');
+    if (!table) return;
+
+    const headers = table.querySelectorAll('th.sortable');
+    let currentSort = 'risk';
+    let sortDirection = 'desc';
+
+    // Build initial player-factor pairs
+    function buildPlayerFactorPairs() {
+        const tbody = table.querySelector('tbody');
+        const allRows = Array.from(tbody.querySelectorAll('tr'));
+        const pairs = [];
+        let currentPlayer = null;
+
+        allRows.forEach(row => {
+            if (row.classList.contains('factors-row')) {
+                if (currentPlayer) {
+                    currentPlayer.factorRow = row;
+                }
+            } else if (row.classList.contains('player-row')) {
+                if (currentPlayer) {
+                    pairs.push(currentPlayer);
+                }
+                currentPlayer = { playerRow: row, factorRow: null };
+            }
+        });
+        if (currentPlayer) {
+            pairs.push(currentPlayer);
+        }
+        return pairs;
+    }
+
+    let playerPairs = buildPlayerFactorPairs();
+
+    // Event delegation for row clicks (works after rebuild)
+    table.querySelector('tbody').addEventListener('click', function(e) {
+        const row = e.target.closest('tr');
+        if (!row || !row.classList.contains('player-row')) return;
+        const idx = playerPairs.findIndex(p => p.playerRow === row);
+        if (idx >= 0 && playerPairs[idx].factorRow) {
+            playerPairs[idx].factorRow.classList.toggle('collapsed');
+        }
+    });
+
+    // Header click handlers
+    headers.forEach(header => {
+        header.addEventListener('click', function() {
+            const sortKey = this.dataset.sort;
+            if (sortKey === 'flag') return;
+
+            if (currentSort === sortKey) {
+                sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort = sortKey;
+                sortDirection = 'desc';
+            }
+
+            headers.forEach(h => {
+                h.classList.remove('sorted-asc', 'sorted-desc');
+            });
+            this.classList.add(sortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc');
+
+            sortTable(currentSort, sortDirection);
+        });
+    });
+
+    function sortTable(sortKey, direction) {
+        const tbody = table.querySelector('tbody');
+
+        playerPairs.sort((a, b) => {
+            const rowA = a.playerRow;
+            const rowB = b.playerRow;
+            let valA, valB;
+
+            if (sortKey === 'name') {
+                valA = rowA.cells[0].textContent.trim();
+                valB = rowB.cells[0].textContent.trim();
+                return direction === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+            } else if (sortKey === 'flag') {
+                valA = rowA.cells[2].textContent.trim() === 'да' ? 1 : 0;
+                valB = rowB.cells[2].textContent.trim() === 'да' ? 1 : 0;
+            } else {
+                valA = parseFloat(rowA.dataset[sortKey]) || 0;
+                valB = parseFloat(rowB.dataset[sortKey]) || 0;
+            }
+
+            if (direction === 'asc') {
+                return valA > valB ? 1 : valA < valB ? -1 : 0;
+            } else {
+                return valA < valB ? 1 : valA > valB ? -1 : 0;
+            }
+        });
+
+        // Rebuild table
+        tbody.innerHTML = '';
+        playerPairs.forEach(pair => {
+            tbody.appendChild(pair.playerRow);
+            if (pair.factorRow) {
+                tbody.appendChild(pair.factorRow);
+            }
+        });
+    }
+
+    // Initialize with risk sort
+    sortTable('risk', 'desc');
+});
+</script>
+{% endblock %}

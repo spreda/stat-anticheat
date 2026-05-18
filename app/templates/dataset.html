@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+{% extends "base.html" %}
+{% block title %}Датасет - CS2 Анализатор Античита{% endblock %}
+{% block content %}
+<h1>Сохраненные матчи</h1>
+<p>Выберите матч для анализа. <strong>Всего матчей:</strong> {{ total_matches }}</p>
+
+<div class="dataset-tabs">
+    <a href="/dataset?type=all&page=1" class="{% if filter_type == 'all' %}active{% endif %}">Все</a>
+    <a href="/dataset?type=clean&page=1" class="{% if filter_type == 'clean' %}active{% endif %}">Чистые</a>
+    <a href="/dataset?type=cheat&page=1" class="{% if filter_type == 'cheat' %}active{% endif %}">С читерами</a>
+</div>
+
+<div class="match-grid">
+    {% for match in matches %}
+    <div class="match-card {% if match.has_cheater %}cheat{% else %}clean{% endif %}">
+        <div class="match-header">
+            <span class="match-badge">{{ 'Чит' if match.has_cheater else 'Чисто' }}</span>
+            <span class="match-id">#{{ match.idx }}</span>
+        </div>
+        <div class="match-body">
+            <p><strong>Игроков:</strong> {{ match.players }}</p>
+            <p><strong>Раундов:</strong> {{ match.rounds }}</p>
+            <p><strong>Строк:</strong> {{ match.rows_formatted }}</p>
+            {% if match.cached %}
+            <span class="cached-badge">Кэш</span>
+            {% endif %}
+        </div>
+        <a href="/analyze-dataset/{{ match.folder }}/{{ match.idx }}" class="match-btn">Анализировать</a>
+    </div>
+    {% endfor %}
+</div>
+
+{% if matches %}
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="/dataset?type={{ filter_type }}&page={{ page - 1 }}" class="page-btn">Назад</a>
+    {% endif %}
+    <span class="page-info">Страница {{ page }} из {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="/dataset?type={{ filter_type }}&page={{ page + 1 }}" class="page-btn">Вперед</a>
+    {% endif %}
+</div>
+{% else %}
+<p>Нет матчей для отображения.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Uploads (per-job temp files)
+uploads/
+
+# Datasets (large parquet/json files)
+datasets/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+{% extends "base.html" %}
+{% block title %}Настройки - CS2 Анализатор Античита{% endblock %}
+{% block content %}
+<h1>Настройки и информация о системе</h1>
+
+<div class="settings-grid">
+    <div class="settings-section">
+        <h2>Статистика системы</h2>
+        <div class="stat-grid">
+            <div class="stat-card">
+                <span class="stat-value">{{ stats.total_jobs }}</span>
+                <span class="stat-label">Всего заданий</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">{{ stats.done_jobs }}</span>
+                <span class="stat-label">Завершено</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">{{ stats.error_jobs }}</span>
+                <span class="stat-label">Ошибок</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">{{ stats.avg_time }}</span>
+                <span class="stat-label">Среднее время (с)</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="settings-section">
+        <h2>Модель машинного обучения</h2>
+        {% if model_info %}
+        <table class="settings-table">
+            <tr><td>Алгоритм</td><td>{{ model_info.algorithm }}</td></tr>
+            <tr><td>Версия</td><td>{{ model_info.version }}</td></tr>
+            <tr><td>Признаков</td><td>{{ model_info.n_features }}</td></tr>
+            <tr><td>Порог классификации</td><td>{{ model_info.threshold }}</td></tr>
+            <tr><td>Дата обучения</td><td>{{ model_info.trained_at }}</td></tr>
+        </table>
+        <h3>Топ-5 признаков по важности</h3>
+        <div class="feature-importance">
+            {% for feat in model_info.top_features %}
+            <div class="fi-row">
+                <span class="fi-name">{{ feat.name }}</span>
+                <div class="fi-bar-container">
+                    <div class="fi-bar" style="width: {{ feat.importance_percent }}%;"></div>
+                </div>
+                <span class="fi-value">{{ feat.importance }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="warning">Модель не загружена. Запустите обучение: <code>python scripts/train_demo.py</code></p>
+        {% endif %}
+    </div>
+
+    <div class="settings-section">
+        <h2>Параметры анализа</h2>
+        <form id="settingsForm">
+            <div class="form-group">
+                <label for="threshold">Порог риска для флага (0-1)</label>
+                <input type="number" id="threshold" name="threshold" value="{{ settings.threshold }}" step="0.01" min="0" max="1" {% if settings.locked %}disabled{% endif %}>
+                {% if settings.locked %}<span class="locked-badge">Заблокировано</span>{% endif %}
+                <small>Игроки с вероятностью выше этого порога будут отмечены как подозрительные</small>
+            </div>
+            <div class="form-group">
+                <label for="min_risk_display">Минимальный риск для отображения (0-100)</label>
+                <input type="number" id="min_risk_display" name="min_risk_display" value="{{ settings.min_risk_display }}" min="0" max="100" {% if settings.locked %}disabled{% endif %}>
+                {% if settings.locked %}<span class="locked-badge">Заблокировано</span>{% endif %}
+            </div>
+            <div class="form-group">
+                <label for="cache_enabled">Кэширование результатов</label>
+                <input type="checkbox" id="cache_enabled" name="cache_enabled" {% if settings.cache_enabled %}checked{% endif %} {% if settings.locked %}disabled{% endif %}>
+                {% if settings.locked %}<span class="locked-badge">Заблокировано</span>{% endif %}
+            </div>
+            <button type="submit" class="btn-save" {% if settings.locked %}disabled{% endif %}>Сохранить настройки</button>
+        </form>
+        {% if settings.locked %}
+        <p class="hint">Параметры заблокированы для обеспечения воспроизводимости результатов. Изменения требуют перезагрузки сервера.</p>
+        {% endif %}
+    </div>
+
+    <div class="settings-section">
+        <h2>Датасет</h2>
+        <table class="settings-table">
+            <tr><td>Всего матчей</td><td>{{ stats.total_matches }}</td></tr>
+            <tr><td>Чистых матчей</td><td>{{ stats.clean_matches }}</td></tr>
+            <tr><td>С читерами</td><td>{{ stats.cheat_matches }}</td></tr>
+            <tr><td>Формат</td><td>Parquet + JSON (tick-level)</td></tr>
+        </table>
+    </div>
+
+    <div class="settings-section">
+        <h2>Пояснения к признакам модели</h2>
+        <div class="explanation-grid">
+            {% for feat_name, feat_desc in feature_explanations.items() %}
+            <div class="exp-card">
+                <strong>{{ feat_name }}</strong> {{ feat_desc }}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}
