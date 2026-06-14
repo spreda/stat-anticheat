@@ -6,19 +6,28 @@ from pathlib import Path
 import json
 import logging
 import joblib
-import pandas as pd
+import polars as pl
 import numpy as np
 import xgboost as xgb
 
 from app.ml.features import build_features, FEATURE_EXPLANATIONS
 from app.db import update_job
-from app.ml.dem_parser import _downcast
 
 logger = logging.getLogger(__name__)
 
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
-# Feature name → display name mapping for contributions
+# Columns to read from parquet — only what build_features() + extract_match_info() need.
+PARQUET_READ_COLS = [
+    "steamid", "name", "tick",
+    "pitch", "yaw", "usercmd_mouse_dx", "usercmd_mouse_dy", "fov", "is_scoped",
+    "kills_total", "deaths_total", "headshot_kills_total", "damage_total",
+    "shots_fired", "ace_rounds_total", "4k_rounds_total", "3k_rounds_total",
+    "velocity", "is_airborne", "fall_velo", "duck_amount", "is_walking",
+    "FIRE", "RELOAD", "ZOOM",
+    "total_rounds_played", "map_name", "round",
+]
+
 FEATURE_DISPLAY_NAMES = {
     "aim_pitch_delta_mean": "Наклон прицела (mean)",
     "aim_pitch_delta_std": "Наклон прицела (std)",
@@ -47,12 +56,7 @@ FEATURE_DISPLAY_NAMES = {
 
 
 def load_model():
-    """Load trained model artifact.
-
-    Priority:
-      1. ensemble_config_v1.joblib + supervised_v1.joblib + isolation_forest_v1.joblib (new ensemble)
-      2. model_v1.joblib (legacy single model)
-    """
+    """Load trained model artifact."""
     ensemble_path = MODELS_DIR / "ensemble_config_v1.joblib"
     supervised_path = MODELS_DIR / "supervised_v1.joblib"
     iso_path = MODELS_DIR / "isolation_forest_v1.joblib"
@@ -75,7 +79,6 @@ def load_model():
         except Exception as e:
             logger.warning("Failed to load ensemble model: %s", e)
 
-    # Legacy fallback
     model_path = MODELS_DIR / "model_v1.joblib"
     if model_path.exists():
         artifact = joblib.load(model_path)
@@ -84,18 +87,19 @@ def load_model():
     return None
 
 
-def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: str | int) -> dict:
+def extract_match_info(tick_df: pl.DataFrame, events: dict, folder: str, idx: str | int) -> dict:
     """Infer match metadata from tick data and JSON events."""
     map_name = "Unknown"
     if "map_name" in tick_df.columns:
-        raw = tick_df["map_name"].dropna()
-        if not raw.empty:
-            map_name = raw.iloc[0]
-            # Strip "de_" prefix for display
+        raw = tick_df["map_name"].drop_nulls()
+        if len(raw) > 0:
+            map_name = raw.to_list()[0]
             if map_name.startswith("de_"):
                 map_name = map_name[3:].capitalize()
     elif "map" in tick_df.columns:
-        map_name = tick_df["map"].dropna().iloc[0] if not tick_df["map"].dropna().empty else "Unknown"
+        raw = tick_df["map"].drop_nulls()
+        if len(raw) > 0:
+            map_name = raw.to_list()[0]
 
     rounds = 0
     if "gameRounds" in events:
@@ -103,9 +107,9 @@ def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: st
     elif "round_freeze_end" in events:
         rounds = len(events["round_freeze_end"])
     elif "round" in tick_df.columns:
-        rounds = int(tick_df["round"].nunique())
+        rounds = tick_df["round"].n_unique()
 
-    duration_ticks = int(tick_df["tick"].nunique()) if "tick" in tick_df.columns else len(tick_df)
+    duration_ticks = tick_df["tick"].n_unique() if "tick" in tick_df.columns else len(tick_df)
     score = "?"
     game_rounds = events.get("gameRounds", [])
     if game_rounds and isinstance(game_rounds, list) and game_rounds:
@@ -116,7 +120,6 @@ def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: st
             if t_score is not None and ct_score is not None:
                 score = f"{t_score}:{ct_score}"
 
-    # Convert ticks to minutes
     duration_sec = duration_ticks // 64
     duration_min = duration_sec // 60
     duration_str = f"{duration_min}:{duration_sec % 60:02d}"
@@ -131,10 +134,10 @@ def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: st
 
     return {
         "map_name": map_name,
-        "map": map_name,              # alias for template compatibility
+        "map": map_name,
         "rounds": rounds,
         "duration_ticks": duration_ticks,
-        "duration": duration_str,     # alias formatted as MM:SS
+        "duration": duration_str,
         "score": score,
         "narrative": narrative,
         "dataset_folder": folder,
@@ -147,66 +150,59 @@ def extract_match_events(events: dict) -> list:
     """Extract important match events for display."""
     match_events = []
     last_tick = 0
-    
-    # Player deaths
+
     deaths = events.get("player_death", [])
-    for d in deaths[:50]:  # Limit to first 50 events
+    for d in deaths[:50]:
         attacker = d.get("attacker_steamid", "?")
         victim = d.get("user_steamid", "?")
         weapon = d.get("weapon", "?")
         headshot = d.get("headshot", False)
         tick = d.get("tick", 0)
-        
-        # Convert tick to mm:ss.hh time format (hundredths of a second)
+
         seconds = tick // 64
         minutes = seconds // 60
         sec_part = seconds % 60
         hundredths = (tick % 64) * 100 // 64
         time_str = f"{minutes}:{sec_part:02d}.{hundredths:02d}"
-        
+
         desc = f"{attacker} убил {victim}"
         if weapon and weapon != "?":
             desc += f" [{weapon}]"
         if headshot:
             desc += " - хедшот"
-        
+
         match_events.append({
             "tick": tick,
             "time": time_str,
             "description": desc,
-            "type": "headshot" if headshot else "kill"
+            "type": "headshot" if headshot else "kill",
         })
         last_tick = max(last_tick, tick)
-    
-    # Round events
+
     round_events = events.get("round_freeze_end", [])
     for i, r in enumerate(round_events[:30]):
         tick = r.get("tick", 0) if isinstance(r, dict) else 0
-        # Convert tick to mm:ss.hh time format (hundredths of a second)
         seconds = tick // 64
         minutes = seconds // 60
         sec_part = seconds % 60
         hundredths = (tick % 64) * 100 // 64
         time_str = f"{minutes}:{sec_part:02d}.{hundredths:02d}"
-        
+
         match_events.append({
             "tick": tick,
             "time": time_str,
             "description": f"Раунд {i+1} начался",
-            "type": "round"
+            "type": "round",
         })
         last_tick = max(last_tick, tick)
-    
-    # Sort by tick
+
     match_events.sort(key=lambda x: x["tick"])
-    
-    # Add logarithmic separators between events
+
     result = []
     for i, event in enumerate(match_events):
         if i > 0:
-            tick_diff = event["tick"] - match_events[i-1]["tick"]
+            tick_diff = event["tick"] - match_events[i - 1]["tick"]
             if tick_diff > 0:
-                # Logarithmic scaling based on seconds: ~0s -> 1px, 1s -> 3px, 2s -> 5px, etc.
                 import math
                 seconds = tick_diff / 64.0
                 height = max(1, min(40, 1 + round(math.log10(seconds + 1) * 8)))
@@ -215,24 +211,22 @@ def extract_match_events(events: dict) -> list:
                     "time": "",
                     "description": "",
                     "type": "separator",
-                    "height": height
+                    "height": height,
                 })
         result.append(event)
-    
-    return result[:100]  # Limit total events
+
+    return result[:100]
 
 
-def get_shap_contributions(row: pd.Series, feature_names: list, scaler, booster, n: int = 5) -> dict:
-    """Compute per-feature SHAP-like contributions for a single player using XGBoost pred_contribs."""
+def get_shap_contributions(row: dict, feature_names: list, scaler, booster, n: int = 5) -> dict:
+    """Compute per-feature SHAP-like contributions for a single player."""
     try:
-        # Build single-row matrix
         x = np.array([[float(row.get(f, 0.0)) for f in feature_names]])
         x = np.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
         x_scaled = scaler.transform(x)
         dm = xgb.DMatrix(x_scaled, feature_names=feature_names)
-        contribs = booster.predict(dm, pred_contribs=True)[0]  # shape: (n_features + 1,)
+        contribs = booster.predict(dm, pred_contribs=True)[0]
 
-        # Last element is the bias/intercept
         bias = float(contribs[-1])
         feature_contribs = []
         for i, fname in enumerate(feature_names):
@@ -245,10 +239,7 @@ def get_shap_contributions(row: pd.Series, feature_names: list, scaler, booster,
                 "abs_value": abs(val),
             })
 
-        # Sort by absolute contribution
         feature_contribs.sort(key=lambda x: x["abs_value"], reverse=True)
-
-        # Filter: only show contributions >= 0.1, round to 3 decimals
         feature_contribs = [
             {
                 "feature": c["feature"],
@@ -263,25 +254,20 @@ def get_shap_contributions(row: pd.Series, feature_names: list, scaler, booster,
         pos = [c for c in feature_contribs if c["value"] > 0][:n]
         neg = [c for c in feature_contribs if c["value"] < 0][:n]
 
-        return {
-            "bias": round(bias, 3),
-            "positive": pos,
-            "negative": neg,
-        }
+        return {"bias": round(bias, 3), "positive": pos, "negative": neg}
     except Exception as e:
         logger.debug("SHAP contribution error: %s", e)
         return {"bias": 0, "positive": [], "negative": []}
 
 
-def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: int = 3) -> list:
-    """Get top contributing factor patterns for a player's risk score.
-    Works with the 23-feature ensemble model."""
+def get_top_factors(row: dict, feature_names: list, explanations: dict, n: int = 3) -> list:
+    """Get top contributing factor patterns for a player's risk score."""
     patterns = []
 
     def safe_get(key, default=0):
-        if key in row.index:
+        if key in row:
             v = row[key]
-            return float(v) if pd.notna(v) else default
+            return float(v) if v is not None else default
         return default
 
     kdr = safe_get("combat_kdr")
@@ -294,80 +280,73 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
     vel_std = safe_get("move_vel_std")
     vel_mean = safe_get("move_vel_mean")
 
-    # Pattern 1: High KDR + high headshot ratio
     if kdr > 3 and hs_ratio > 0.6:
         patterns.append({
             "name": "combat_kdr",
             "value": f"{kdr:.1f}",
-            "explanation": "Высокий KDR при высокой доле хедшотов"
+            "explanation": "Высокий KDR при высокой доле хедшотов",
         })
         patterns.append({
             "name": "combat_headshot_ratio",
             "value": f"{hs_ratio*100:.0f}%",
-            "explanation": "Высокий KDR при высокой доле хедшотов"
+            "explanation": "Высокий KDR при высокой доле хедшотов",
         })
 
-    # Pattern 2: Low mouse movement + good KDR
     if mouse_mag < 3 and kdr > 2:
         patterns.append({
             "name": "aim_mouse_mag_mean",
             "value": f"{mouse_mag:.1f}",
-            "explanation": "Малая амплитуда мыши при высоком KDR"
+            "explanation": "Малая амплитуда мыши при высоком KDR",
         })
         patterns.append({
             "name": "combat_kdr",
             "value": f"{kdr:.1f}",
-            "explanation": "Малая амплитуда мыши при высоком KDR"
+            "explanation": "Малая амплитуда мыши при высоком KDR",
         })
 
-    # Pattern 3: Wallbangs (cheater indicator)
     if wallbangs > 1:
         patterns.append({
             "name": "json_wallbangs",
             "value": f"{int(wallbangs)}",
-            "explanation": "Убийства через стены — подозрительная активность"
+            "explanation": "Убийства через стены — подозрительная активность",
         })
 
-    # Pattern 4: Low yaw/pitch delta (aimbot indicator)
     if yaw_std < 1.0 and pitch_std < 1.0:
         patterns.append({
             "name": "aim_yaw_delta_std",
             "value": f"{yaw_std:.2f}",
-            "explanation": "Низкое отклонение углов поворота"
+            "explanation": "Низкое отклонение углов поворота",
         })
         patterns.append({
             "name": "aim_pitch_delta_std",
             "value": f"{pitch_std:.2f}",
-            "explanation": "Низкое отклонение углов поворота"
+            "explanation": "Низкое отклонение углов поворота",
         })
 
-    # Pattern 5: Low velocity std + high KDR (triggerbot with movement lock)
     if vel_std < 20 and kdr > 2.5:
         patterns.append({
             "name": "move_vel_std",
             "value": f"{vel_std:.1f}",
-            "explanation": "Низкий разброс скорости при высоком KDR"
+            "explanation": "Низкий разброс скорости при высоком KDR",
         })
         patterns.append({
             "name": "combat_kdr",
             "value": f"{kdr:.1f}",
-            "explanation": "Низкий разброс скорости при высоком KDR"
+            "explanation": "Низкий разброс скорости при высоком KDR",
         })
 
-    # Pattern 6: High fire rate + headshots
     if fire_rate > 0.15 and hs_ratio > 0.5:
         patterns.append({
             "name": "btn_fire_rate",
             "value": f"{fire_rate:.3f}",
-            "explanation": "Высокая частота стрельбы с хедшотами"
+            "explanation": "Высокая частота стрельбы с хедшотами",
         })
         patterns.append({
             "name": "combat_headshot_ratio",
             "value": f"{hs_ratio*100:.0f}%",
-            "explanation": "Высокая частота стрельбы с хедшотами"
+            "explanation": "Высокая частота стрельбы с хедшотами",
         })
 
-    # Fallback: individual suspicious features if no patterns matched
     if not patterns:
         if kdr > 3:
             patterns.append({"name": "combat_kdr", "value": f"{kdr:.1f}", "explanation": "KDR выше 3"})
@@ -383,47 +362,37 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
     return patterns[:n]
 
 
-def analyze_match(job_id: str, file_path: str, events: dict | None = None, match_info: dict | None = None, tick_df: pd.DataFrame | None = None):
+def analyze_match(job_id: str, file_path: str, events: dict | None = None, match_info: dict | None = None, tick_df: pl.DataFrame | None = None):
     """Run analysis on a match file."""
     update_job(job_id, "processing")
     logger.info("analyze_match start job=%s", job_id)
 
     try:
         if tick_df is None:
-            tick_df = pd.read_parquet(file_path)
-            _downcast(tick_df)
+            tick_df = pl.read_parquet(file_path, columns=PARQUET_READ_COLS)
         if events is None:
             events = {"cheaters": []}
 
-        # Strip to only columns needed for feature computation (dataset files
-        # can have 200+ columns; sorting/groupbying all of them is extremely slow).
         _needed = {"steamid", "name", "tick",
             "pitch", "yaw", "usercmd_mouse_dx", "usercmd_mouse_dy", "fov", "is_scoped",
             "kills_total", "deaths_total", "headshot_kills_total", "damage_total",
-            "shots_fired", "accuracy_penalty", "ace_rounds_total", "4k_rounds_total", "3k_rounds_total",
-            "velocity", "velocity_X", "velocity_Y", "velocity_Z",
-            "is_airborne", "fall_velo", "duck_amount", "is_walking",
-            "X", "Y", "Z",
+            "shots_fired", "ace_rounds_total", "4k_rounds_total", "3k_rounds_total",
+            "velocity", "is_airborne", "fall_velo", "duck_amount", "is_walking",
             "FIRE", "RELOAD", "ZOOM",
-            "total_rounds_played", "health", "armor_value", "balance", "score", "mvps", "ping",
-            "map_name", "round"}
+            "total_rounds_played"}
         _present = [c for c in _needed if c in tick_df.columns]
-        tick_df = tick_df[_present]
+        tick_df = tick_df.select(_present)
         logger.info("analyze_match cols=%d job=%s", len(tick_df.columns), job_id)
 
-        # Build features
         feats = build_features(tick_df, events, "unknown")
 
-        # Build name lookup before freeing tick_df
         name_map = {}
         if "name" in tick_df.columns and "steamid" in tick_df.columns:
-            name_map = dict(zip(tick_df["steamid"].astype(str), tick_df["name"]))
+            name_map = dict(zip(tick_df["steamid"].cast(str).to_list(), tick_df["name"].to_list()))
         del tick_df
 
-        # Extract match events
         match_events = extract_match_events(events)
 
-        # Load model
         artifact = load_model()
         if artifact is None:
             result = {
@@ -442,21 +411,16 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
         feature_names = artifact["feature_names"]
         threshold = artifact.get("threshold", 0.5)
 
-        # Prepare features
-        X = feats[feature_names].values
+        X = feats.select(feature_names).to_numpy()
         X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
         X_scaled = scaler.transform(X)
 
-        # Predict — ensemble or single model
         model_type = artifact.get("type", "single")
         if model_type == "ensemble":
-            # Supervised probability
             sup_proba = model.predict_proba(X_scaled)[:, 1]
-            # Anomaly risk
             iso_model = artifact["iso_model"]
             iso_scores = iso_model.decision_function(X_scaled)
             iso_risk = (1 - (iso_scores - iso_scores.min()) / (iso_scores.max() - iso_scores.min() + 1e-8))
-            # Weighted ensemble
             w_sup = artifact["supervised_weight"]
             w_anom = artifact["anomaly_weight"]
             proba = w_sup * sup_proba + w_anom * iso_risk
@@ -466,7 +430,6 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
         risk_scores = (proba * 100).astype(int)
         flags = proba >= threshold
 
-        # Get booster for SHAP contributions
         try:
             if model_type == "ensemble":
                 booster = model.estimator.get_booster()
@@ -475,9 +438,8 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
         except Exception:
             booster = None
 
-        # Build player results
         players = []
-        for i, row in feats.iterrows():
+        for i, row in enumerate(feats.iter_rows(named=True)):
             top_factors = get_top_factors(row, feature_names, FEATURE_EXPLANATIONS)
             shap = get_shap_contributions(row, feature_names, scaler, booster) if booster else {"bias": 0, "positive": [], "negative": []}
             sid = str(row["steamid"])
@@ -516,7 +478,7 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
                 "flagged_players": int(flags.sum()),
                 "avg_risk": round(float(risk_scores.mean()), 1),
                 "max_risk": int(risk_scores.max()),
-            }
+            },
         }
         if match_info:
             result["match_info"] = match_info

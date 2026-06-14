@@ -10,11 +10,11 @@ import uuid
 import json
 from datetime import datetime
 
-from app.services.analyzer import analyze_match, extract_match_info, load_model
+from app.services.analyzer import analyze_match, extract_match_info, load_model, PARQUET_READ_COLS
 from app.services.dataset_browser import list_all_matches, get_match_info, list_demo_matches
 from app.services.cache import load_cached, save_cached
 from app.db import init_db, get_job, create_job, update_job, get_job_stats, get_active_job, reset_stale_jobs
-from app.ml.dem_parser import parse_dem_to_cache, _downcast
+from app.ml.dem_parser import parse_dem_to_cache, _downcast_pl
 
 BASE_DIR = Path(__file__).parent
 UPLOADS_DIR = BASE_DIR.parent / "uploads"
@@ -105,7 +105,7 @@ async def upload_file(
     create_job(job_id, str(uploaded_path), filename)
 
     def _run_upload_pipeline():
-        import gc, json, os, logging, traceback, shutil, pandas as pd
+        import gc, json, os, logging, traceback, shutil
         from pathlib import Path
         _log = logging.getLogger(__name__)
         with _ANALYSIS_SEM:
@@ -236,7 +236,7 @@ async def analyze_dataset(
     create_job(job_id, str(file_path), f"dataset:{folder}/{idx}")
 
     def _analyze_and_cache():
-        import gc, json, traceback, logging, pandas as pd
+        import gc, json, traceback, logging, threading, polars as pl
         _log = logging.getLogger(__name__)
         with _ANALYSIS_SEM:
             _log.info("Analyzing dataset match job=%s folder=%s idx=%s", job_id, folder, idx)
@@ -256,7 +256,7 @@ async def analyze_dataset(
 
                 def _read_parquet():
                     try:
-                        _read_result[0] = pd.read_parquet(file_path)
+                        _read_result[0] = pl.read_parquet(file_path, columns=PARQUET_READ_COLS)
                     except Exception as e:
                         _read_error[0] = e
                     finally:
@@ -271,7 +271,7 @@ async def analyze_dataset(
                     raise _read_error[0]
                 tick_df = _read_result[0]
                 _log.info("Dataset downcast job=%s rows=%d cols=%d", job_id, len(tick_df), len(tick_df.columns))
-                _downcast(tick_df)
+                tick_df = _downcast_pl(tick_df)
                 _log.info("Dataset extract match info job=%s", job_id)
                 match_info = extract_match_info(tick_df, events, folder, idx)
                 _log.info("Dataset analyze match job=%s", job_id)
@@ -376,7 +376,7 @@ async def analyze_demo(
     create_job(job_id, "", f"demo:{filename}")
 
     def _full_pipeline():
-        import gc, json, traceback, logging, pandas as pd, shutil
+        import gc, json, traceback, logging, shutil, polars as pl
         _log = logging.getLogger(__name__)
         with _ANALYSIS_SEM:
             _log.info("Demo pipeline start job=%s file=%s", job_id, filename)
@@ -393,7 +393,7 @@ async def analyze_demo(
                     events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
 
                 _log.info("Demo read parquet job=%s", job_id)
-                tick_df = pd.read_parquet(pq_path)
+                tick_df = pl.read_parquet(pq_path, columns=PARQUET_READ_COLS)
                 _log.info("Demo extract match info job=%s", job_id)
                 match_info = extract_match_info(tick_df, events, "matches", filename)
                 _log.info("Demo analyze match job=%s", job_id)

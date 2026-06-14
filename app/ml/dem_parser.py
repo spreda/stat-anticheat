@@ -4,9 +4,11 @@ Converts CS2 demo files into the same format as the CS2CD dataset (.parquet + .j
 so the existing feature pipeline can process them identically.
 
 Uses demoparser2 (Rust-based) for fast parsing.
+Returns polars DataFrames for downstream memory efficiency.
 """
 import numpy as np
 import pandas as pd
+import polars as pl
 from pathlib import Path
 from typing import Tuple
 
@@ -34,34 +36,23 @@ def _bitmask_field() -> str:
 # ── Field lists for demoparser2 ───────────────────────────────────────
 
 TICK_PROPS = [
-    # Aim / view angles
-    "CCSPlayerPawn.m_angEyeAngles",               # -> pitch, yaw
-    "CCSPlayerPawn.CCSPlayer_CameraServices.m_iFOV",  # -> fov
-    "CCSPlayerPawn.m_bIsScoped",                  # -> is_scoped
-
-    # Combat
+    "CCSPlayerPawn.m_angEyeAngles",
+    "CCSPlayerPawn.CCSPlayer_CameraServices.m_iFOV",
+    "CCSPlayerPawn.m_bIsScoped",
     "CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iKills",
     "CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDeaths",
     "CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iHeadShotKills",
     "CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDamage",
     "CCSPlayerPawn.m_iShotsFired",
-
-    # Movement
-    "CCSPlayerPawn.m_vecBaseVelocity",            # -> velocity_X/Y/Z
-    "CCSPlayerPawn.CCSPlayer_MovementServices.m_flFallVelocity",  # -> fall_velo
-    "CCSPlayerPawn.CCSPlayer_MovementServices.m_flDuckAmount",    # -> duck_amount
-    "CCSPlayerPawn.m_bIsWalking",                 # -> is_walking
-    "CCSPlayerPawn.m_fFlags",                     # -> is_airborne
-
-    # Position (from CBodyComponent)
+    "CCSPlayerPawn.m_vecBaseVelocity",
+    "CCSPlayerPawn.CCSPlayer_MovementServices.m_flFallVelocity",
+    "CCSPlayerPawn.CCSPlayer_MovementServices.m_flDuckAmount",
+    "CCSPlayerPawn.m_bIsWalking",
+    "CCSPlayerPawn.m_fFlags",
     "CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecX",
     "CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecY",
     "CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecZ",
-
-    # Buttons
     _bitmask_field(),
-
-    # Player state
     "CCSPlayerPawn.m_iHealth",
     "CCSPlayerPawn.m_ArmorValue",
     "CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount",
@@ -72,145 +63,140 @@ TICK_PROPS = [
 
 
 def _is_bit_set(mask: float, bit: int) -> bool:
-    """Check if a specific bit is set in a button mask."""
     if pd.isna(mask):
         return False
     return bool(int(mask) & bit)
 
 
 def _parse_eye_angles(series: pd.Series) -> Tuple[pd.Series, pd.Series]:
-    """Split m_angEyeAngles vector column into pitch and yaw series."""
-    # The column contains lists/arrays of [pitch, yaw, roll]
     pitch = series.apply(lambda v: float(v[0]) if isinstance(v, (list, np.ndarray)) else 0.0)
     yaw = series.apply(lambda v: float(v[1]) if isinstance(v, (list, np.ndarray)) else 0.0)
     return pitch, yaw
 
 
 def _parse_velocity(series: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
-    """Split m_vecBaseVelocity vector column into X, Y, Z series."""
     vx = series.apply(lambda v: float(v[0]) if isinstance(v, (list, np.ndarray)) else 0.0)
     vy = series.apply(lambda v: float(v[1]) if isinstance(v, (list, np.ndarray)) else 0.0)
     vz = series.apply(lambda v: float(v[2]) if isinstance(v, (list, np.ndarray)) else 0.0)
     return vx, vy, vz
 
 
-def _downcast(df: pd.DataFrame) -> pd.DataFrame:
-    """Downcast numeric columns to reduce memory (float64→float32, int64→int32)."""
-    for col in df.columns:
-        col_type = df[col].dtype
-        if col_type == "float64":
-            df[col] = pd.to_numeric(df[col], downcast="float")
-        elif col_type == "int64":
-            df[col] = pd.to_numeric(df[col], downcast="integer")
+def _downcast_pl(df: pl.DataFrame) -> pl.DataFrame:
+    """Downcast numeric columns to float32 / int32 for memory efficiency."""
+    schema = {}
+    for name, dtype in df.schema.items():
+        if dtype in (pl.Float64,):
+            schema[name] = pl.Float32
+        elif dtype in (pl.Int64, pl.UInt64):
+            schema[name] = pl.Int32
+        elif dtype in (pl.UInt32,):
+            schema[name] = pl.Int32
+    if schema:
+        df = df.cast(schema, strict=False)
     return df
 
 
-def _raw_cols() -> list:
-    """Return raw demoparser2 column names that have been derived into new columns."""
-    return list(TICK_PROPS)
-
-
-def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
+def parse_dem(filepath: str | Path) -> Tuple[pl.DataFrame, dict]:
     """
-    Parse a CS2 .dem file into tick DataFrame and events dict.
-    Memory-optimised: drops raw columns and downcasts before expensive operations.
+    Parse a CS2 .dem file into tick polars DataFrame and events dict.
     """
     from demoparser2 import DemoParser
 
     filepath = Path(filepath)
     dp = DemoParser(str(filepath))
 
-    df = dp.parse_ticks(TICK_PROPS)
-    if df.empty:
-        return pd.DataFrame(), {"player_death": [], "round_freeze_end": []}
+    pdf = dp.parse_ticks(TICK_PROPS)
+    if pdf.empty:
+        return pl.DataFrame(), {"player_death": [], "round_freeze_end": []}
 
-    df["steamid"] = df["steamid"].astype(str)
+    pdf["steamid"] = pdf["steamid"].astype(str)
 
-    # ── Derive columns from raw parser columns ────────────────────
-    pitch, yaw = _parse_eye_angles(df["CCSPlayerPawn.m_angEyeAngles"])
-    df["pitch"] = pitch
-    df["yaw"] = yaw
-    df["fov"] = df["CCSPlayerPawn.CCSPlayer_CameraServices.m_iFOV"].fillna(0).astype(float)
-    df["is_scoped"] = df["CCSPlayerPawn.m_bIsScoped"].fillna(False).astype(bool)
+    pitch, yaw = _parse_eye_angles(pdf["CCSPlayerPawn.m_angEyeAngles"])
+    pdf["pitch"] = pitch
+    pdf["yaw"] = yaw
+    pdf["fov"] = pdf["CCSPlayerPawn.CCSPlayer_CameraServices.m_iFOV"].fillna(0).astype(float)
+    pdf["is_scoped"] = pdf["CCSPlayerPawn.m_bIsScoped"].fillna(False).astype(bool)
 
-    df["kills_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iKills"].fillna(0).astype(int)
-    df["deaths_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDeaths"].fillna(0).astype(int)
-    df["headshot_kills_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iHeadShotKills"].fillna(0).astype(int)
-    df["damage_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDamage"].fillna(0).astype(float)
-    df["shots_fired"] = df["CCSPlayerPawn.m_iShotsFired"].fillna(0).astype(int)
+    pdf["kills_total"] = pdf["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iKills"].fillna(0).astype(int)
+    pdf["deaths_total"] = pdf["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDeaths"].fillna(0).astype(int)
+    pdf["headshot_kills_total"] = pdf["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iHeadShotKills"].fillna(0).astype(int)
+    pdf["damage_total"] = pdf["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDamage"].fillna(0).astype(float)
+    pdf["shots_fired"] = pdf["CCSPlayerPawn.m_iShotsFired"].fillna(0).astype(int)
 
-    vx, vy, vz = _parse_velocity(df["CCSPlayerPawn.m_vecBaseVelocity"])
-    df["velocity_X"] = vx
-    df["velocity_Y"] = vy
-    df["velocity_Z"] = vz
-    df["fall_velo"] = df["CCSPlayerPawn.CCSPlayer_MovementServices.m_flFallVelocity"].fillna(0).astype(float)
-    df["duck_amount"] = df["CCSPlayerPawn.CCSPlayer_MovementServices.m_flDuckAmount"].fillna(0).astype(float)
-    df["is_walking"] = df["CCSPlayerPawn.m_bIsWalking"].fillna(False).astype(bool)
-    df["is_airborne"] = ~(df["CCSPlayerPawn.m_fFlags"].fillna(0).astype(int) & FL_ONGROUND).astype(bool)
+    vx, vy, vz = _parse_velocity(pdf["CCSPlayerPawn.m_vecBaseVelocity"])
+    pdf["velocity_X"] = vx
+    pdf["velocity_Y"] = vy
+    pdf["velocity_Z"] = vz
+    pdf["fall_velo"] = pdf["CCSPlayerPawn.CCSPlayer_MovementServices.m_flFallVelocity"].fillna(0).astype(float)
+    pdf["duck_amount"] = pdf["CCSPlayerPawn.CCSPlayer_MovementServices.m_flDuckAmount"].fillna(0).astype(float)
+    pdf["is_walking"] = pdf["CCSPlayerPawn.m_bIsWalking"].fillna(False).astype(bool)
+    pdf["is_airborne"] = ~(pdf["CCSPlayerPawn.m_fFlags"].fillna(0).astype(int) & FL_ONGROUND).astype(bool)
 
-    df["X"] = df["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecX"].fillna(0).astype(float)
-    df["Y"] = df["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecY"].fillna(0).astype(float)
-    df["Z"] = df["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecZ"].fillna(0).astype(float)
+    pdf["X"] = pdf["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecX"].fillna(0).astype(float)
+    pdf["Y"] = pdf["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecY"].fillna(0).astype(float)
+    pdf["Z"] = pdf["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecZ"].fillna(0).astype(float)
 
     mask_col = _bitmask_field()
-    df["FIRE"] = df[mask_col].apply(lambda v: _is_bit_set(v, IN_ATTACK))
-    df["RELOAD"] = df[mask_col].apply(lambda v: _is_bit_set(v, IN_RELOAD))
-    df["ZOOM"] = df[mask_col].apply(lambda v: _is_bit_set(v, IN_ZOOM))
+    pdf["FIRE"] = pdf[mask_col].apply(lambda v: _is_bit_set(v, IN_ATTACK))
+    pdf["RELOAD"] = pdf[mask_col].apply(lambda v: _is_bit_set(v, IN_RELOAD))
+    pdf["ZOOM"] = pdf[mask_col].apply(lambda v: _is_bit_set(v, IN_ZOOM))
 
-    df["health"] = df["CCSPlayerPawn.m_iHealth"].fillna(0).astype(int)
-    df["armor_value"] = df["CCSPlayerPawn.m_ArmorValue"].fillna(0).astype(int)
-    df["balance"] = df["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount"].fillna(0).astype(int)
-    df["score"] = df["CCSPlayerController.m_iScore"].fillna(0).astype(int)
-    df["mvps"] = df["CCSPlayerController.m_iMVPs"].fillna(0).astype(int)
-    df["ping"] = df["CCSPlayerController.m_iPing"].fillna(0).astype(int)
+    pdf["health"] = pdf["CCSPlayerPawn.m_iHealth"].fillna(0).astype(int)
+    pdf["armor_value"] = pdf["CCSPlayerPawn.m_ArmorValue"].fillna(0).astype(int)
+    pdf["balance"] = pdf["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount"].fillna(0).astype(int)
+    pdf["score"] = pdf["CCSPlayerController.m_iScore"].fillna(0).astype(int)
+    pdf["mvps"] = pdf["CCSPlayerController.m_iMVPs"].fillna(0).astype(int)
+    pdf["ping"] = pdf["CCSPlayerController.m_iPing"].fillna(0).astype(int)
 
-    # Drop all raw demoparser columns (free memory before expensive ops)
-    df.drop(columns=[c for c in _raw_cols() if c in df.columns], inplace=True, errors="ignore")
+    raw = [c for c in TICK_PROPS if c in pdf.columns]
+    pdf.drop(columns=raw, inplace=True, errors="ignore")
 
-    # ── Downcast BEFORE sort (smaller data = less swap) ───────────
-    df = _downcast(df)
+    # Convert to polars for memory-efficient sort + delta computation
+    df = pl.from_pandas(pdf)
+    del pdf
 
-    # ── Sort for delta computation ────────────────────────────────
-    df.sort_values(["steamid", "tick"], inplace=True)
+    df = _downcast_pl(df)
+    df = df.sort(["steamid", "tick"])
 
-    # Mouse deltas (on downcasted, sorted data)
     _MOUSE_SCALE = 20.0
-    _yaw_delta = df.groupby("steamid")["yaw"].diff().fillna(0)
-    _yaw_delta = np.where(_yaw_delta > 180, 360 - _yaw_delta, _yaw_delta)
-    _yaw_delta = np.where(_yaw_delta < -180, _yaw_delta + 360, _yaw_delta)
-    _pitch_delta = df.groupby("steamid")["pitch"].diff().fillna(0)
-    df["usercmd_mouse_dx"] = _yaw_delta * _MOUSE_SCALE
-    df["usercmd_mouse_dy"] = _pitch_delta * _MOUSE_SCALE
+    df = df.with_columns(
+        (pl.col("yaw").diff().over("steamid").fill_null(0) * _MOUSE_SCALE).alias("usercmd_mouse_dx"),
+        (pl.col("pitch").diff().over("steamid").fill_null(0) * _MOUSE_SCALE).alias("usercmd_mouse_dy"),
+    )
 
-    df["velocity"] = np.sqrt(df["velocity_X"] ** 2 + df["velocity_Y"] ** 2 + df["velocity_Z"] ** 2)
+    df = df.with_columns(
+        pl.sqrt(pl.col("velocity_X").pow(2) + pl.col("velocity_Y").pow(2) + pl.col("velocity_Z").pow(2)).alias("velocity"),
+    )
 
-    # Static columns (no per-player info available in .dem)
-    df["accuracy_penalty"] = 0.0
-    df["ace_rounds_total"] = 0
-    df["4k_rounds_total"] = 0
-    df["3k_rounds_total"] = 0
+    df = df.with_columns(
+        pl.lit(0.0).alias("accuracy_penalty"),
+        pl.lit(0).alias("ace_rounds_total"),
+        pl.lit(0).alias("4k_rounds_total"),
+        pl.lit(0).alias("3k_rounds_total"),
+    )
 
-    # Map name
     header = dp.parse_header()
-    df["map_name"] = header.get("map_name", "Unknown")
+    df = df.with_columns(
+        pl.lit(header.get("map_name", "Unknown")).alias("map_name"),
+    )
 
-    # ── Round info ────────────────────────────────────────────────
     round_starts = dp.parse_event("round_freeze_end")
     num_rounds = len(round_starts)
-    df["total_rounds_played"] = num_rounds
+    df = df.with_columns(pl.lit(num_rounds).alias("total_rounds_played"))
 
     if num_rounds > 0 and "tick" in round_starts.columns:
         round_thresholds = sorted(round_starts["tick"].dropna().unique().tolist())
-        def _assign_round(tick: int) -> int:
+        def _assign_round(tick_val: int) -> int:
             for r, t in enumerate(round_thresholds, start=1):
-                if tick < t:
+                if tick_val < t:
                     return r - 1
             return len(round_thresholds)
-        df["round"] = df["tick"].apply(_assign_round)
+        df = df.with_columns(
+            pl.col("tick").map_elements(_assign_round, return_dtype=pl.Int32).alias("round"),
+        )
     else:
-        df["round"] = 0
+        df = df.with_columns(pl.lit(0).alias("round"))
 
-    # ── Events ────────────────────────────────────────────────────
     deaths = dp.parse_event("player_death")
     events = {
         "player_death": deaths.to_dict(orient="records") if not deaths.empty else [],
@@ -218,8 +204,7 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
         "cheaters": [],
     }
 
-    # ── Ensure expected columns exist ─────────────────────────────
-    keep_cols = {
+    keep_cols = [
         "steamid", "name", "tick", "pitch", "yaw", "usercmd_mouse_dx", "usercmd_mouse_dy",
         "fov", "is_scoped", "kills_total", "deaths_total", "headshot_kills_total",
         "damage_total", "shots_fired", "accuracy_penalty", "ace_rounds_total",
@@ -227,10 +212,10 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
         "velocity_Z", "is_airborne", "fall_velo", "duck_amount", "is_walking",
         "X", "Y", "Z", "FIRE", "RELOAD", "ZOOM", "total_rounds_played",
         "health", "armor_value", "balance", "score", "mvps", "ping", "map_name", "round",
-    }
+    ]
     for col in keep_cols:
         if col not in df.columns:
-            df[col] = 0
+            df = df.with_columns(pl.lit(0).alias(col))
 
     return df, events
 
@@ -272,7 +257,6 @@ def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str
     shared_json = shared / f"{stem}.json"
 
     if shared_pq.exists() and shared_json.exists():
-        # Copy cached files into job dir (fast file copy, not re-parse)
         pq_path = cache_dir / f"{stem}.parquet"
         json_path = cache_dir / f"{stem}.json"
         shutil.copy2(shared_pq, pq_path)
@@ -281,17 +265,15 @@ def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str
 
     tick_df, events = parse_dem(filepath)
 
-    # Atomically write to shared cache (temp file + rename to avoid partial writes)
     _tmp_pq = shared / f"{stem}.tmp.parquet"
     _tmp_json = shared / f"{stem}.tmp.json"
-    tick_df.to_parquet(_tmp_pq, index=False)
+    tick_df.write_parquet(_tmp_pq)
     import json as _json
     with open(_tmp_json, "w", encoding="utf-8") as f:
         _json.dump(events, f, ensure_ascii=False, default=str)
     _tmp_pq.rename(shared_pq)
     _tmp_json.rename(shared_json)
 
-    # Also save to job dir
     pq_path = cache_dir / f"{stem}.parquet"
     json_path = cache_dir / f"{stem}.json"
     shutil.copy2(shared_pq, pq_path)
