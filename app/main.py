@@ -24,6 +24,7 @@ DATASET_DIR = BASE_DIR.parent / "datasets" / "cs2cd_dataset"
 
 app = FastAPI(title="CS2 Anti-Cheat Analyzer", version="1.0")
 
+import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -80,12 +81,10 @@ async def index(request: Request):
 
 @app.post("/upload")
 async def upload_file(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     metadata: str = Form("{}"),
 ):
     """Upload a match file for analysis."""
-    # Validate
     if not (file.filename.endswith(".parquet") or file.filename.endswith(".dem")):
         return JSONResponse({"error": "Only .parquet or .dem files accepted"}, status_code=400)
 
@@ -93,57 +92,50 @@ async def upload_file(
     job_dir = UPLOADS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
-    # Save uploaded file
-    uploaded_path = job_dir / file.filename
+    filename = file.filename
+    uploaded_path = job_dir / filename
     with open(uploaded_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Convert .dem → .parquet + .json if needed
-    if file.filename.endswith(".dem"):
-        try:
-            pq_path, json_path = parse_dem_to_cache(uploaded_path, job_dir)
-        except Exception as e:
-            import shutil
-            shutil.rmtree(job_dir, ignore_errors=True)
-            return JSONResponse({"error": f"Не удалось распарсить .dem файл: {e}"}, status_code=422)
-        match_file_path = pq_path
-    else:
-        match_file_path = str(job_dir / "match.parquet")
-        import os
-        os.rename(uploaded_path, match_file_path)
+    create_job(job_id, str(uploaded_path), filename)
 
-    # Save metadata
-    meta_path = job_dir / "metadata.json"
-    with open(meta_path, "w") as f:
-        json.dump({"original_name": file.filename, "uploaded_at": datetime.utcnow().isoformat(), "user_metadata": json.loads(metadata)}, f)
-
-    # Create job record
-    create_job(job_id, str(match_file_path), file.filename)
-
-    # Queue analysis — pass events if .dem was converted
-    def _run_analysis():
-        import traceback
+    def _run_upload_pipeline():
+        import gc, json, os, logging, traceback, shutil, pandas as pd
+        from pathlib import Path
         _log = logging.getLogger(__name__)
-        _log.info("Analyzing uploaded file job=%s", job_id)
+        _log.info("Upload pipeline start job=%s file=%s", job_id, filename)
         try:
-            _pq_dir = Path(match_file_path).parent
-            _json_candidates = list(_pq_dir.glob("*.json"))
+            _job_dir = Path(uploaded_path).parent
+            if filename.endswith(".dem"):
+                pq_path, _ = parse_dem_to_cache(uploaded_path, _job_dir)
+                match_file_path = pq_path
+            else:
+                match_file_path = str(_job_dir / "match.parquet")
+                os.rename(uploaded_path, match_file_path)
+
+            meta_path = _job_dir / "metadata.json"
+            with open(meta_path, "w") as f:
+                json.dump({"original_name": filename, "uploaded_at": datetime.utcnow().isoformat(), "user_metadata": {}}, f)
+
+            _json_candidates = list(_job_dir.glob("*.json"))
             _evts = None
             if _json_candidates:
                 try:
-                    with open(_json_candidates[0], "r", encoding="utf-8") as _f:
-                        _evts = json.load(_f)
+                    with open(_json_candidates[0], "r", encoding="utf-8") as f:
+                        _evts = json.load(f)
                 except Exception:
                     pass
-            analyze_match(job_id, str(match_file_path), events=_evts)
-            _log.info("Upload analysis done job=%s", job_id)
+
+            analyze_match(job_id, match_file_path, events=_evts)
+            _log.info("Upload pipeline done job=%s", job_id)
+            gc.collect()
         except Exception:
             err_msg = traceback.format_exc()
-            _log.error("Upload analysis failed job=%s\n%s", job_id, err_msg)
+            _log.error("Upload pipeline failed job=%s\n%s", job_id, err_msg)
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
+            shutil.rmtree(_job_dir, ignore_errors=True)
 
-    background_tasks.add_task(_run_analysis)
-
+    asyncio.get_event_loop().run_in_executor(None, _run_upload_pipeline)
     return {"job_id": job_id, "status": "pending"}
 
 
@@ -214,7 +206,6 @@ async def dataset_page(
 async def analyze_dataset(
     folder: str,
     idx: int,
-    background_tasks: BackgroundTasks,
 ):
     """Analyze a dataset match — redirect immediately, process in background."""
     if folder not in ("no_cheater_present", "with_cheater_present"):
@@ -232,7 +223,7 @@ async def analyze_dataset(
     create_job(job_id, str(file_path), f"dataset:{folder}/{idx}")
 
     def _analyze_and_cache():
-        import traceback
+        import gc, json, traceback, logging, pandas as pd
         _log = logging.getLogger(__name__)
         _log.info("Analyzing dataset match job=%s folder=%s idx=%s", job_id, folder, idx)
         try:
@@ -244,12 +235,12 @@ async def analyze_dataset(
             except Exception:
                 events = {"cheaters": []}
 
-            import pandas as pd
             tick_df = pd.read_parquet(file_path)
             match_info = extract_match_info(tick_df, events, folder, idx)
             analyze_match(job_id, str(file_path), events=events, match_info=match_info, tick_df=tick_df)
             _log.info("Dataset analysis done job=%s", job_id)
             del tick_df
+            gc.collect()
 
             job = get_job(job_id)
             if job and job.get("result"):
@@ -264,8 +255,7 @@ async def analyze_dataset(
             _log.error("Dataset analysis failed job=%s\n%s", job_id, err_msg)
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
-    background_tasks.add_task(_analyze_and_cache)
-
+    asyncio.get_event_loop().run_in_executor(None, _analyze_and_cache)
     return RedirectResponse(url=f"/report-dataset/{folder}/{idx}?job={job_id}")
 
 
@@ -340,23 +330,16 @@ async def analyze_demo(
     job_id = str(uuid.uuid4())
     job_dir = UPLOADS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
+    create_job(job_id, "", f"demo:{filename}")
 
-    # Convert .dem → parquet + json
-    try:
-        pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
-    except Exception as e:
-        import shutil
-        shutil.rmtree(job_dir, ignore_errors=True)
-        return JSONResponse({"error": f"Не удалось распарсить .dem файл: {e}"}, status_code=422)
-    create_job(job_id, pq_path, f"demo:{filename}")
-
-    def _analyze():
-        import gc
-        import traceback
-        import pandas as pd
+    def _full_pipeline():
+        import gc, json, traceback, logging, pandas as pd, shutil
         _log = logging.getLogger(__name__)
-        _log.info("Analyzing demo job=%s file=%s", job_id, filename)
+        _log.info("Demo pipeline start job=%s file=%s", job_id, filename)
         try:
+            pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
+            update_job(job_id, "pending", json.dumps({"parquet": pq_path}))
+
             events = {}
             try:
                 with open(json_path, "r", encoding="utf-8") as f:
@@ -367,15 +350,16 @@ async def analyze_demo(
             tick_df = pd.read_parquet(pq_path)
             match_info = extract_match_info(tick_df, events, "matches", filename)
             analyze_match(job_id, pq_path, events=events, match_info=match_info, tick_df=tick_df)
-            _log.info("Analysis done job=%s", job_id)
+            _log.info("Demo pipeline done job=%s", job_id)
             del tick_df
             gc.collect()
         except Exception:
             err_msg = traceback.format_exc()
-            _log.error("Analysis failed job=%s\n%s", job_id, err_msg)
+            _log.error("Demo pipeline failed job=%s\n%s", job_id, err_msg)
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
+            shutil.rmtree(job_dir, ignore_errors=True)
 
-    background_tasks.add_task(_analyze)
+    asyncio.get_event_loop().run_in_executor(None, _full_pipeline)
     return RedirectResponse(url=f"/report-demo/{filename}?job={job_id}")
 
 
