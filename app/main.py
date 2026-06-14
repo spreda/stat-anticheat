@@ -108,6 +108,7 @@ async def upload_file(
         try:
             _job_dir = Path(uploaded_path).parent
             if filename.endswith(".dem"):
+                _log.info("Upload parse dem job=%s", job_id)
                 pq_path, _ = parse_dem_to_cache(uploaded_path, _job_dir)
                 match_file_path = pq_path
             else:
@@ -127,6 +128,7 @@ async def upload_file(
                 except Exception:
                     pass
 
+            _log.info("Upload analyze job=%s", job_id)
             analyze_match(job_id, match_file_path, events=_evts)
             _log.info("Upload pipeline done job=%s", job_id)
             gc.collect()
@@ -136,7 +138,7 @@ async def upload_file(
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
             shutil.rmtree(_job_dir, ignore_errors=True)
 
-    asyncio.get_event_loop().run_in_executor(None, _run_upload_pipeline)
+    asyncio.create_task(asyncio.to_thread(_run_upload_pipeline))
     return {"job_id": job_id, "status": "pending"}
 
 
@@ -236,9 +238,13 @@ async def analyze_dataset(
             except Exception:
                 events = {"cheaters": []}
 
+            _log.info("Dataset read parquet job=%s path=%s", job_id, file_path)
             tick_df = pd.read_parquet(file_path)
+            _log.info("Dataset downcast job=%s rows=%d cols=%d", job_id, len(tick_df), len(tick_df.columns))
             _downcast(tick_df)
+            _log.info("Dataset extract match info job=%s", job_id)
             match_info = extract_match_info(tick_df, events, folder, idx)
+            _log.info("Dataset analyze match job=%s", job_id)
             analyze_match(job_id, str(file_path), events=events, match_info=match_info, tick_df=tick_df)
             _log.info("Dataset analysis done job=%s", job_id)
             del tick_df
@@ -249,6 +255,7 @@ async def analyze_dataset(
                 try:
                     result = json.loads(job["result"])
                     if result.get("status") == "done":
+                        _log.info("Dataset cache result job=%s", job_id)
                         save_cached(folder, idx, result)
                 except Exception:
                     pass
@@ -257,7 +264,7 @@ async def analyze_dataset(
             _log.error("Dataset analysis failed job=%s\n%s", job_id, err_msg)
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
-    asyncio.get_event_loop().run_in_executor(None, _analyze_and_cache)
+    asyncio.create_task(asyncio.to_thread(_analyze_and_cache))
     return RedirectResponse(url=f"/report-dataset/{folder}/{idx}?job={job_id}")
 
 
@@ -343,6 +350,7 @@ async def analyze_demo(
         _log = logging.getLogger(__name__)
         _log.info("Demo pipeline start job=%s file=%s", job_id, filename)
         try:
+            _log.info("Demo parse to cache job=%s", job_id)
             pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
             update_job(job_id, "pending", json.dumps({"parquet": pq_path}))
 
@@ -353,8 +361,11 @@ async def analyze_demo(
             except Exception:
                 events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
 
+            _log.info("Demo read parquet job=%s", job_id)
             tick_df = pd.read_parquet(pq_path)
+            _log.info("Demo extract match info job=%s", job_id)
             match_info = extract_match_info(tick_df, events, "matches", filename)
+            _log.info("Demo analyze match job=%s", job_id)
             analyze_match(job_id, pq_path, events=events, match_info=match_info, tick_df=tick_df)
             _log.info("Demo pipeline done job=%s", job_id)
             del tick_df
@@ -365,7 +376,7 @@ async def analyze_demo(
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
             shutil.rmtree(job_dir, ignore_errors=True)
 
-    asyncio.get_event_loop().run_in_executor(None, _full_pipeline)
+    asyncio.create_task(asyncio.to_thread(_full_pipeline))
     return RedirectResponse(url=f"/report-demo/{filename}?job={job_id}")
 
 
