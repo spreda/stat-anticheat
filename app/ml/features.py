@@ -101,10 +101,10 @@ def compute_combat_features(df: pl.DataFrame) -> pl.DataFrame:
     )
     return agg.select([
         "steamid",
-        (pl.col("combat_kills_total") / pl.col("combat_deaths_total").clip_min(1)).alias("combat_kdr"),
-        (pl.col("combat_hs_total") / pl.col("combat_kills_total").clip_min(1)).alias("combat_headshot_ratio"),
-        (pl.col("combat_damage_total") / pl.col("combat_rounds").clip_min(1)).alias("combat_damage_per_round"),
-        (pl.col("combat_kills_total") / pl.col("combat_rounds").clip_min(1)).alias("combat_kills_per_round"),
+        (pl.col("combat_kills_total") / pl.when(pl.col("combat_deaths_total") == 0).then(1).otherwise(pl.col("combat_deaths_total"))).alias("combat_kdr"),
+        (pl.col("combat_hs_total") / pl.when(pl.col("combat_kills_total") == 0).then(1).otherwise(pl.col("combat_kills_total"))).alias("combat_headshot_ratio"),
+        (pl.col("combat_damage_total") / pl.when(pl.col("combat_rounds") == 0).then(1).otherwise(pl.col("combat_rounds"))).alias("combat_damage_per_round"),
+        (pl.col("combat_kills_total") / pl.when(pl.col("combat_rounds") == 0).then(1).otherwise(pl.col("combat_rounds"))).alias("combat_kills_per_round"),
         "combat_ace_rounds",
         "combat_4k_rounds",
         "combat_3k_rounds",
@@ -172,7 +172,7 @@ def extract_json_features(events: dict) -> pl.DataFrame:
 
     rows = [{"steamid": sid, **vals} for sid, vals in features.items()]
     return pl.DataFrame(rows).with_columns(
-        (pl.col("json_headshots") / pl.col("json_kills").clip_min(1)).alias("json_headshot_ratio"),
+        (pl.col("json_headshots") / pl.when(pl.col("json_kills") == 0).then(1).otherwise(pl.col("json_kills"))).alias("json_headshot_ratio"),
     )
 
 
