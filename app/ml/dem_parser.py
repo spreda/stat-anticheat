@@ -105,88 +105,58 @@ def _downcast(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _raw_cols() -> list:
+    """Return raw demoparser2 column names that have been derived into new columns."""
+    return list(TICK_PROPS)
+
+
 def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
     """
     Parse a CS2 .dem file into tick DataFrame and events dict.
-
-    Returns
-    -------
-    tick_df : pd.DataFrame
-        Per-tick per-player data with column names matching the parquet dataset.
-    events : dict
-        Dict with 'player_death' and 'round_freeze_end' lists (compatible with
-        the existing extract_match_events and feature pipeline).
+    Memory-optimised: drops raw columns and downcasts before expensive operations.
     """
     from demoparser2 import DemoParser
 
     filepath = Path(filepath)
     dp = DemoParser(str(filepath))
 
-    # ── Parse ticks ───────────────────────────────────────────────
-    raw = dp.parse_ticks(TICK_PROPS)
-    if raw.empty:
+    df = dp.parse_ticks(TICK_PROPS)
+    if df.empty:
         return pd.DataFrame(), {"player_death": [], "round_freeze_end": []}
 
-    df = raw.copy()
-
-    # Ensure steamid is string for consistent merging
     df["steamid"] = df["steamid"].astype(str)
 
-    # ── Map columns ───────────────────────────────────────────────
-    # Aim
+    # ── Derive columns from raw parser columns ────────────────────
     pitch, yaw = _parse_eye_angles(df["CCSPlayerPawn.m_angEyeAngles"])
     df["pitch"] = pitch
     df["yaw"] = yaw
     df["fov"] = df["CCSPlayerPawn.CCSPlayer_CameraServices.m_iFOV"].fillna(0).astype(float)
     df["is_scoped"] = df["CCSPlayerPawn.m_bIsScoped"].fillna(False).astype(bool)
 
-    # Approximate usercmd_mouse_dx/dy from angular changes between ticks.
-    # usercmd_mouse_dx ~ yaw_delta, usercmd_mouse_dy ~ pitch_delta.
-    # Scale factor 20 puts mean mouse_mag in ~3-14 range (matching real CS2 data).
-    _MOUSE_SCALE = 20.0
-    df = df.sort_values(["steamid", "tick"])
-    _yaw_delta = df.groupby("steamid")["yaw"].diff().fillna(0)
-    _yaw_delta = np.where(_yaw_delta > 180, 360 - _yaw_delta, _yaw_delta)  # wraparound
-    _yaw_delta = np.where(_yaw_delta < -180, _yaw_delta + 360, _yaw_delta)
-    _pitch_delta = df.groupby("steamid")["pitch"].diff().fillna(0)
-    df["usercmd_mouse_dx"] = _yaw_delta * _MOUSE_SCALE
-    df["usercmd_mouse_dy"] = _pitch_delta * _MOUSE_SCALE
-
-    # Combat
     df["kills_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iKills"].fillna(0).astype(int)
     df["deaths_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDeaths"].fillna(0).astype(int)
     df["headshot_kills_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iHeadShotKills"].fillna(0).astype(int)
     df["damage_total"] = df["CCSPlayerController.CCSPlayerController_ActionTrackingServices.m_iDamage"].fillna(0).astype(float)
     df["shots_fired"] = df["CCSPlayerPawn.m_iShotsFired"].fillna(0).astype(int)
-    df["accuracy_penalty"] = 0.0   # not available per-player
-    df["ace_rounds_total"] = 0     # not available in .dem
-    df["4k_rounds_total"] = 0      # not available in .dem
-    df["3k_rounds_total"] = 0      # not available in .dem
 
-    # Movement
     vx, vy, vz = _parse_velocity(df["CCSPlayerPawn.m_vecBaseVelocity"])
     df["velocity_X"] = vx
     df["velocity_Y"] = vy
     df["velocity_Z"] = vz
-    df["velocity"] = np.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
     df["fall_velo"] = df["CCSPlayerPawn.CCSPlayer_MovementServices.m_flFallVelocity"].fillna(0).astype(float)
     df["duck_amount"] = df["CCSPlayerPawn.CCSPlayer_MovementServices.m_flDuckAmount"].fillna(0).astype(float)
     df["is_walking"] = df["CCSPlayerPawn.m_bIsWalking"].fillna(False).astype(bool)
-    # Airborne: NOT on ground (FL_ONGROUND flag is bit 0 in m_fFlags)
     df["is_airborne"] = ~(df["CCSPlayerPawn.m_fFlags"].fillna(0).astype(int) & FL_ONGROUND).astype(bool)
 
-    # Position
     df["X"] = df["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecX"].fillna(0).astype(float)
     df["Y"] = df["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecY"].fillna(0).astype(float)
     df["Z"] = df["CCSPlayerPawn.CBodyComponentBaseAnimGraph.m_vecZ"].fillna(0).astype(float)
 
-    # Buttons (from bitmask)
     mask_col = _bitmask_field()
     df["FIRE"] = df[mask_col].apply(lambda v: _is_bit_set(v, IN_ATTACK))
     df["RELOAD"] = df[mask_col].apply(lambda v: _is_bit_set(v, IN_RELOAD))
     df["ZOOM"] = df[mask_col].apply(lambda v: _is_bit_set(v, IN_ZOOM))
 
-    # Player state
     df["health"] = df["CCSPlayerPawn.m_iHealth"].fillna(0).astype(int)
     df["armor_value"] = df["CCSPlayerPawn.m_ArmorValue"].fillna(0).astype(int)
     df["balance"] = df["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount"].fillna(0).astype(int)
@@ -194,16 +164,41 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
     df["mvps"] = df["CCSPlayerController.m_iMVPs"].fillna(0).astype(int)
     df["ping"] = df["CCSPlayerController.m_iPing"].fillna(0).astype(int)
 
-    # Map name (from header)
+    # Drop all raw demoparser columns (free memory before expensive ops)
+    df.drop(columns=[c for c in _raw_cols() if c in df.columns], inplace=True, errors="ignore")
+
+    # ── Downcast BEFORE sort (smaller data = less swap) ───────────
+    df = _downcast(df)
+
+    # ── Sort for delta computation ────────────────────────────────
+    df.sort_values(["steamid", "tick"], inplace=True)
+
+    # Mouse deltas (on downcasted, sorted data)
+    _MOUSE_SCALE = 20.0
+    _yaw_delta = df.groupby("steamid")["yaw"].diff().fillna(0)
+    _yaw_delta = np.where(_yaw_delta > 180, 360 - _yaw_delta, _yaw_delta)
+    _yaw_delta = np.where(_yaw_delta < -180, _yaw_delta + 360, _yaw_delta)
+    _pitch_delta = df.groupby("steamid")["pitch"].diff().fillna(0)
+    df["usercmd_mouse_dx"] = _yaw_delta * _MOUSE_SCALE
+    df["usercmd_mouse_dy"] = _pitch_delta * _MOUSE_SCALE
+
+    df["velocity"] = np.sqrt(df["velocity_X"] ** 2 + df["velocity_Y"] ** 2 + df["velocity_Z"] ** 2)
+
+    # Static columns (no per-player info available in .dem)
+    df["accuracy_penalty"] = 0.0
+    df["ace_rounds_total"] = 0
+    df["4k_rounds_total"] = 0
+    df["3k_rounds_total"] = 0
+
+    # Map name
     header = dp.parse_header()
     df["map_name"] = header.get("map_name", "Unknown")
 
-    # ── Parse round info ──────────────────────────────────────────
+    # ── Round info ────────────────────────────────────────────────
     round_starts = dp.parse_event("round_freeze_end")
     num_rounds = len(round_starts)
     df["total_rounds_played"] = num_rounds
 
-    # Assign round number based on tick thresholds
     if num_rounds > 0 and "tick" in round_starts.columns:
         round_thresholds = sorted(round_starts["tick"].dropna().unique().tolist())
         def _assign_round(tick: int) -> int:
@@ -215,15 +210,15 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
     else:
         df["round"] = 0
 
-    # ── Parse events ──────────────────────────────────────────────
+    # ── Events ────────────────────────────────────────────────────
     deaths = dp.parse_event("player_death")
     events = {
         "player_death": deaths.to_dict(orient="records") if not deaths.empty else [],
         "round_freeze_end": round_starts.to_dict(orient="records") if not round_starts.empty else [],
-        "cheaters": [],  # .dem files don't have cheater labels
+        "cheaters": [],
     }
 
-    # ── Drop raw demoparser columns ───────────────────────────────
+    # ── Ensure expected columns exist ─────────────────────────────
     keep_cols = {
         "steamid", "name", "tick", "pitch", "yaw", "usercmd_mouse_dx", "usercmd_mouse_dy",
         "fov", "is_scoped", "kills_total", "deaths_total", "headshot_kills_total",
@@ -233,15 +228,10 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
         "X", "Y", "Z", "FIRE", "RELOAD", "ZOOM", "total_rounds_played",
         "health", "armor_value", "balance", "score", "mvps", "ping", "map_name", "round",
     }
-    existing_keep = [c for c in keep_cols if c in df.columns]
-    df = df[existing_keep].copy()
-
-    # Ensure all expected columns exist (fill missing with 0)
     for col in keep_cols:
         if col not in df.columns:
             df[col] = 0
 
-    df = _downcast(df)
     return df, events
 
 
