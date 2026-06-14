@@ -13,7 +13,7 @@ from datetime import datetime
 from app.services.analyzer import analyze_match, extract_match_info, load_model
 from app.services.dataset_browser import list_all_matches, get_match_info, list_demo_matches
 from app.services.cache import load_cached, save_cached
-from app.db import init_db, get_job, create_job, update_job, get_job_stats
+from app.db import init_db, get_job, create_job, update_job, get_job_stats, get_active_job
 from app.ml.dem_parser import parse_dem_to_cache
 
 BASE_DIR = Path(__file__).parent
@@ -326,6 +326,10 @@ async def analyze_demo(
     demo_path = MATCHES_DIR / filename
     if not demo_path.exists() or not filename.endswith(".dem"):
         return JSONResponse({"error": "Demo file not found"}, status_code=404)
+
+    existing = get_active_job(f"demo:{filename}")
+    if existing:
+        return RedirectResponse(url=f"/report-demo/{filename}?job={existing['id']}")
 
     job_id = str(uuid.uuid4())
     job_dir = UPLOADS_DIR / job_id

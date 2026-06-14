@@ -51,6 +51,17 @@ def update_job(job_id: str, status: str, result: str | None = None):
     conn.close()
 
 
+def get_active_job(filename: str) -> dict | None:
+    """Return the first pending/processing job for a filename, or None."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM jobs WHERE filename = ? AND status IN ('pending','processing') ORDER BY created_at DESC LIMIT 1",
+        (filename,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_job(job_id: str) -> dict | None:
     conn = get_conn()
     row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
