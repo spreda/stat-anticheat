@@ -1,6 +1,7 @@
 """
 SQLite database for job tracking.
 """
+import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -46,6 +47,18 @@ def update_job(job_id: str, status: str, result: str | None = None):
     conn.execute(
         "UPDATE jobs SET status = ?, result = ?, updated_at = ? WHERE id = ?",
         (status, result, datetime.utcnow().isoformat(), job_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def reset_stale_jobs():
+    """Reset jobs stuck in pending/processing after server restart."""
+    conn = get_conn()
+    msg = json.dumps({"status": "error", "message": "Сервер был перезапущен. Запустите анализ снова."})
+    conn.execute(
+        "UPDATE jobs SET status = 'error', result = ?, updated_at = ? WHERE status IN ('pending','processing')",
+        (msg, datetime.utcnow().isoformat())
     )
     conn.commit()
     conn.close()

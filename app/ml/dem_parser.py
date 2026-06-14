@@ -245,29 +245,60 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
     return df, events
 
 
+# Shared cache for parsed .dem files (reused across job runs).
+# Files are .dem → .parquet + .json once, then re-linked for each job.
+_DEM_CACHE_DIR = None
+
+
+def _get_dem_cache() -> Path:
+    global _DEM_CACHE_DIR
+    if _DEM_CACHE_DIR is None:
+        _DEM_CACHE_DIR = Path(__file__).parent.parent.parent / "uploads" / ".dem_cache"
+        _DEM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _DEM_CACHE_DIR
+
+
 def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str, str]:
     """
     Parse .dem file and save as parquet + json in a cache directory.
+    Uses a shared cache so the same .dem is only parsed once.
 
     Returns
     -------
     parquet_path : str
     json_path : str
     """
+    import shutil
     import gc
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     stem = Path(filepath).stem
+    shared = _get_dem_cache()
+    shared_pq = shared / f"{stem}.parquet"
+    shared_json = shared / f"{stem}.json"
+
+    if shared_pq.exists() and shared_json.exists():
+        # Copy cached files into job dir (fast file copy, not re-parse)
+        pq_path = cache_dir / f"{stem}.parquet"
+        json_path = cache_dir / f"{stem}.json"
+        shutil.copy2(shared_pq, pq_path)
+        shutil.copy2(shared_json, json_path)
+        return str(pq_path), str(json_path)
+
     tick_df, events = parse_dem(filepath)
 
+    # Save to shared cache
+    tick_df.to_parquet(shared_pq, index=False)
+    import json as _json
+    with open(shared_json, "w", encoding="utf-8") as f:
+        _json.dump(events, f, ensure_ascii=False, default=str)
+
+    # Also save to job dir
     pq_path = cache_dir / f"{stem}.parquet"
     json_path = cache_dir / f"{stem}.json"
-
-    tick_df.to_parquet(pq_path, index=False)
-    import json as _json
-    with open(json_path, "w", encoding="utf-8") as f:
-        _json.dump(events, f, ensure_ascii=False, default=str)
+    shutil.copy2(shared_pq, pq_path)
+    shutil.copy2(shared_json, json_path)
 
     del tick_df, events
     gc.collect()
