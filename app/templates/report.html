@@ -5,7 +5,12 @@
 <h1>Отчет по матчу</h1>
 <p>Задание: {{ job.id }} | Статус: <span class="status-{{ job.status }}">{{ job.status }}</span></p>
 
-{% if result %}
+{% if job.status == 'error' %}
+<div class="warning">
+    <p>{% if result and result.message %}{{ result.message }}{% else %}Неизвестная ошибка обработки матча.{% endif %}</p>
+    <p><a href="/dataset">← Вернуться к списку матчей</a></p>
+</div>
+{% elif result %}
     {% if result.model_loaded %}
         <div class="summary">
             <h2>Сводка</h2>

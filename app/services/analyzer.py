@@ -4,6 +4,7 @@ Supports both legacy model_v1.joblib and new ensemble (supervised + anomaly).
 """
 from pathlib import Path
 import json
+import logging
 import joblib
 import pandas as pd
 import numpy as np
@@ -11,6 +12,8 @@ import xgboost as xgb
 
 from app.ml.features import build_features, FEATURE_EXPLANATIONS
 from app.db import update_job
+
+logger = logging.getLogger(__name__)
 
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
@@ -68,8 +71,8 @@ def load_model():
                 "anomaly_weight": ensemble["anomaly_weight"],
                 "iso_model": iso["model"],
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to load ensemble model: %s", e)
 
     # Legacy fallback
     model_path = MODELS_DIR / "model_v1.joblib"
@@ -264,7 +267,8 @@ def get_shap_contributions(row: pd.Series, feature_names: list, scaler, booster,
             "positive": pos,
             "negative": neg,
         }
-    except Exception:
+    except Exception as e:
+        logger.debug("SHAP contribution error: %s", e)
         return {"bias": 0, "positive": [], "negative": []}
 
 
@@ -378,17 +382,24 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
     return patterns[:n]
 
 
-def analyze_match(job_id: str, file_path: str, events: dict | None = None, match_info: dict | None = None):
+def analyze_match(job_id: str, file_path: str, events: dict | None = None, match_info: dict | None = None, tick_df: pd.DataFrame | None = None):
     """Run analysis on a match file."""
     update_job(job_id, "processing")
 
     try:
-        tick_df = pd.read_parquet(file_path)
+        if tick_df is None:
+            tick_df = pd.read_parquet(file_path)
         if events is None:
             events = {"cheaters": []}
 
         # Build features
         feats = build_features(tick_df, events, "unknown")
+
+        # Build name lookup before freeing tick_df
+        name_map = {}
+        if "name" in tick_df.columns and "steamid" in tick_df.columns:
+            name_map = dict(zip(tick_df["steamid"].astype(str), tick_df["name"]))
+        del tick_df
 
         # Extract match events
         match_events = extract_match_events(events)
@@ -445,11 +456,6 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
         except Exception:
             booster = None
 
-        # Build name lookup from tick_df
-        name_map = {}
-        if "name" in tick_df.columns and "steamid" in tick_df.columns:
-            name_map = dict(zip(tick_df["steamid"].astype(str), tick_df["name"]))
-
         # Build player results
         players = []
         for i, row in feats.iterrows():
@@ -499,6 +505,6 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
         update_job(job_id, "done", json.dumps(result, ensure_ascii=False))
 
     except Exception as e:
-        result = {"status": "error", "message": str(e)}
+        logger.exception("Analysis failed for job %s", job_id)
+        result = {"status": "error", "message": f"Ошибка анализа: {e}"}
         update_job(job_id, "error", json.dumps(result, ensure_ascii=False))
-        raise

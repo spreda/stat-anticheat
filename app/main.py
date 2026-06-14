@@ -13,7 +13,7 @@ from datetime import datetime
 from app.services.analyzer import analyze_match, extract_match_info, load_model
 from app.services.dataset_browser import list_all_matches, get_match_info, list_demo_matches
 from app.services.cache import load_cached, save_cached
-from app.db import init_db, get_job, create_job, get_job_stats
+from app.db import init_db, get_job, create_job, update_job, get_job_stats
 from app.ml.dem_parser import parse_dem_to_cache
 
 BASE_DIR = Path(__file__).parent
@@ -23,6 +23,24 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 DATASET_DIR = BASE_DIR.parent / "datasets" / "cs2cd_dataset"
 
 app = FastAPI(title="CS2 Anti-Cheat Analyzer", version="1.0")
+
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch unhandled exceptions and return a user-friendly error page."""
+    logging.getLogger(__name__).exception("Unhandled error on %s %s", request.method, request.url.path)
+    if "text/html" in request.headers.get("accept", ""):
+        return HTMLResponse(
+            render_template("error.html", {
+                "request": request,
+                "message": f"Внутренняя ошибка сервера: {exc}",
+            }),
+            status_code=500,
+        )
+    return JSONResponse({"error": f"Внутренняя ошибка сервера: {exc}"}, status_code=500)
 
 # Static files
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -68,7 +86,12 @@ async def upload_file(
 
     # Convert .dem → .parquet + .json if needed
     if file.filename.endswith(".dem"):
-        pq_path, json_path = parse_dem_to_cache(uploaded_path, job_dir)
+        try:
+            pq_path, json_path = parse_dem_to_cache(uploaded_path, job_dir)
+        except Exception as e:
+            import shutil
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return JSONResponse({"error": f"Не удалось распарсить .dem файл: {e}"}, status_code=422)
         match_file_path = pq_path
     else:
         match_file_path = str(job_dir / "match.parquet")
@@ -85,18 +108,21 @@ async def upload_file(
 
     # Queue analysis — pass events if .dem was converted
     def _run_analysis():
-        import json as _json
-        # Try to load events.json if it exists next to the parquet
-        _pq_dir = Path(match_file_path).parent
-        _json_candidates = list(_pq_dir.glob("*.json"))
-        _evts = None
-        if _json_candidates:
-            try:
-                with open(_json_candidates[0], "r", encoding="utf-8") as _f:
-                    _evts = _json.load(_f)
-            except Exception:
-                pass
-        analyze_match(job_id, str(match_file_path), events=_evts)
+        import traceback
+        try:
+            _pq_dir = Path(match_file_path).parent
+            _json_candidates = list(_pq_dir.glob("*.json"))
+            _evts = None
+            if _json_candidates:
+                try:
+                    with open(_json_candidates[0], "r", encoding="utf-8") as _f:
+                        _evts = json.load(_f)
+                except Exception:
+                    pass
+            analyze_match(job_id, str(match_file_path), events=_evts)
+        except Exception:
+            err_msg = traceback.format_exc()
+            update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     background_tasks.add_task(_run_analysis)
 
@@ -188,30 +214,33 @@ async def analyze_dataset(
     create_job(job_id, str(file_path), f"dataset:{folder}/{idx}")
 
     def _analyze_and_cache():
-        # Read JSON metadata for events
-        json_path = DATASET_DIR / folder / f"{idx}.json"
-        events = {}
+        import traceback
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                events = json.load(f)
-        except Exception:
-            events = {"cheaters": []}
-
-        # Build match info and analyze
-        import pandas as pd
-        tick_df = pd.read_parquet(file_path)
-        match_info = extract_match_info(tick_df, events, folder, idx)
-        analyze_match(job_id, str(file_path), events=events, match_info=match_info)
-
-        # Save to cache after analysis
-        job = get_job(job_id)
-        if job and job.get("result"):
+            json_path = DATASET_DIR / folder / f"{idx}.json"
+            events = {}
             try:
-                result = json.loads(job["result"])
-                if result.get("status") == "done":
-                    save_cached(folder, idx, result)
+                with open(json_path, "r", encoding="utf-8") as f:
+                    events = json.load(f)
             except Exception:
-                pass
+                events = {"cheaters": []}
+
+            import pandas as pd
+            tick_df = pd.read_parquet(file_path)
+            match_info = extract_match_info(tick_df, events, folder, idx)
+            analyze_match(job_id, str(file_path), events=events, match_info=match_info, tick_df=tick_df)
+            del tick_df
+
+            job = get_job(job_id)
+            if job and job.get("result"):
+                try:
+                    result = json.loads(job["result"])
+                    if result.get("status") == "done":
+                        save_cached(folder, idx, result)
+                except Exception:
+                    pass
+        except Exception:
+            err_msg = traceback.format_exc()
+            update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     background_tasks.add_task(_analyze_and_cache)
 
@@ -237,18 +266,27 @@ async def report_dataset_page(request: Request, folder: str, idx: int, job: str 
         job_row = get_job(job)
         if job_row:
             status = job_row.get("status", "pending")
-            if status == "done" and job_row.get("result"):
+            result = json.loads(job_row["result"]) if job_row.get("result") else None
+            if status == "done" and result:
                 # Analysis just finished — reload cached result
-                result = load_cached(folder, idx)
-                if result:
+                cached = load_cached(folder, idx)
+                if cached:
                     from app.ml.features import FEATURE_EXPLANATIONS
                     return HTMLResponse(render_template("report.html", {
                         "request": request,
                         "job": {"filename": f"dataset:{folder}/{idx}", "status": "done", "id": job},
-                        "result": result,
+                        "result": cached,
                         "feature_explanations": FEATURE_EXPLANATIONS,
                         "active_page": "dataset",
                     }))
+            if status == "error":
+                return HTMLResponse(render_template("report.html", {
+                    "request": request,
+                    "job": {"filename": f"dataset:{folder}/{idx}", "status": "error", "id": job},
+                    "result": result or {"message": "Неизвестная ошибка при анализе матча."},
+                    "feature_explanations": {},
+                    "active_page": "dataset",
+                }))
             return HTMLResponse(render_template("polling.html", {
                 "request": request,
                 "job_id": job,
@@ -282,21 +320,32 @@ async def analyze_demo(
     job_dir.mkdir(exist_ok=True)
 
     # Convert .dem → parquet + json
-    pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
+    try:
+        pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
+    except Exception as e:
+        import shutil
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return JSONResponse({"error": f"Не удалось распарсить .dem файл: {e}"}, status_code=422)
     create_job(job_id, pq_path, f"demo:{filename}")
 
     def _analyze():
-        events = {}
+        import traceback
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                events = json.load(f)
-        except Exception:
-            events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
+            events = {}
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    events = json.load(f)
+            except Exception:
+                events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
 
-        import pandas as pd
-        tick_df = pd.read_parquet(pq_path)
-        match_info = extract_match_info(tick_df, events, "matches", filename)
-        analyze_match(job_id, pq_path, events=events, match_info=match_info)
+            import pandas as pd
+            tick_df = pd.read_parquet(pq_path)
+            match_info = extract_match_info(tick_df, events, "matches", filename)
+            analyze_match(job_id, pq_path, events=events, match_info=match_info, tick_df=tick_df)
+            del tick_df
+        except Exception:
+            err_msg = traceback.format_exc()
+            update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     background_tasks.add_task(_analyze)
     return RedirectResponse(url=f"/report-demo/{filename}?job={job_id}")
@@ -317,6 +366,14 @@ async def report_demo_page(request: Request, filename: str, job: str = Query(Non
                     "job": {"filename": f"demo:{filename}", "status": "done", "id": job},
                     "result": result,
                     "feature_explanations": FEATURE_EXPLANATIONS,
+                    "active_page": "dataset",
+                }))
+            if status == "error":
+                return HTMLResponse(render_template("report.html", {
+                    "request": request,
+                    "job": {"filename": f"demo:{filename}", "status": "error", "id": job},
+                    "result": result or {"message": "Неизвестная ошибка при анализе демо-файла."},
+                    "feature_explanations": {},
                     "active_page": "dataset",
                 }))
             return HTMLResponse(render_template("polling.html", {
@@ -343,18 +400,27 @@ async def settings_page(request: Request):
     artifact = load_model()
     model_info = None
     if artifact:
-        top = artifact.get("feature_importances", {})
-        if isinstance(top, dict) and top:
-            max_imp = max(top.values())
+        model_type = artifact.get("type", "single")
+        feature_importances = artifact.get("feature_importances", {})
+        if model_type == "ensemble":
+            try:
+                model = artifact.get("model")
+                if model and hasattr(model, "feature_importances_"):
+                    importances = model.feature_importances_
+                    fnames = artifact.get("feature_names", [])
+                    feature_importances = dict(zip(fnames, importances.tolist())) if len(fnames) == len(importances) else {}
+            except Exception:
+                pass
+        top_features = []
+        if isinstance(feature_importances, dict) and feature_importances:
+            max_imp = max(feature_importances.values())
             top_features = sorted(
-                [{"name": k, "importance": round(v, 4), "importance_percent": round(v / max_imp * 100, 1)} for k, v in top.items()],
+                [{"name": k, "importance": round(v, 4), "importance_percent": round(v / max_imp * 100, 1)} for k, v in feature_importances.items()],
                 key=lambda x: x["importance"],
                 reverse=True,
             )[:5]
-        else:
-            top_features = []
         model_info = {
-            "algorithm": artifact.get("algorithm", "XGBoost"),
+            "algorithm": f"{'Ensemble' if model_type == 'ensemble' else 'XGBoost'}",
             "version": artifact.get("version", "v1"),
             "n_features": len(artifact.get("feature_names", [])),
             "threshold": artifact.get("threshold", 0.5),

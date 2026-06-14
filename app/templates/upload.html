@@ -117,7 +117,7 @@
             } else if (data.status === 'error') {
                 clearInterval(interval);
                 setProgress(0, 'Ошибка');
-                alert('Ошибка: ' + (data.result?.message || 'Неизвестная ошибка'));
+                alert('Ошибка: ' + ((data.result && (data.result.message || data.result.error)) || 'Неизвестная ошибка'));
                 submitBtn.disabled = false;
             }
         }, 1500);

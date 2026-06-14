@@ -49,7 +49,7 @@ async function checkJobAndRedirect() {
             }, 300);
             return true;
         } else if (data.status === 'error') {
-            statusEl.textContent = 'Ошибка: ' + (data.result?.error || 'Неизвестная ошибка');
+            statusEl.textContent = 'Ошибка: ' + ((data.result && (data.result.message || data.result.error)) || 'Неизвестная ошибка');
             barEl.style.background = '#e74c3c';
             return true;
         }
