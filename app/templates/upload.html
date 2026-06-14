@@ -3,12 +3,12 @@
 {% block title %}Загрузка матча - CS2 Анализатор Античита{% endblock %}
 {% block content %}
 <h1>Загрузка матча</h1>
-<p>Загрузите файл матча (.parquet) для анализа.</p>
+<p>Загрузите файл матча (.parquet или .dem) для анализа.</p>
 
 <form id="uploadForm" enctype="multipart/form-data">
     <div class="drop-zone" id="dropZone">
-        <p>Перетащите .parquet файл сюда или нажмите для выбора</p>
-        <input type="file" id="fileInput" name="file" accept=".parquet" required>
+        <p>Перетащите .parquet или .dem файл сюда или нажмите для выбора</p>
+        <input type="file" id="fileInput" name="file" accept=".parquet,.dem" required>
     </div>
     <div id="fileInfo"></div>
     <button type="submit" id="submitBtn" disabled>Анализировать матч</button>

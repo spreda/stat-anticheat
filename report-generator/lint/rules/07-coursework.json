@@ -1,0 +1,254 @@
+[
+  {
+    "id": "ai-hedging-verbs",
+    "type": "regex",
+    "level": "warning",
+    "context": "intext",
+    "pattern": "(?i)(может\\s+быть|может\\s+стать|позволяет\\s+создавать|позволяет\\s+получить|позволяет\\s+реализовать|позволяет\\s+достичь|позволяет\\s+значительно|дает\\s+возможность|способствует\\s+повышени|предоставляет\\s+широк|представляет\\s+собой|является\\s+одним\\s+из|служит\\s+для|выступает\\s+в\\s+качестве|открывает\\s+новые|позволяет\\s+легко|может\\s+использоваться)",
+    "message": "Verb construction typical of AI-generated text. Replace with factual statement: not «позволяет» but concrete action.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "vague-intensifier",
+    "type": "regex",
+    "level": "warning",
+    "context": "intext",
+    "pattern": "(?i)(очень\\s+|крайне\\s+|чрезвычайн|весьма\\s+|достаточно\\s+сложн|достаточно\\s+высок|достаточно\\s+большо|существенн[оы][ее]?\\s+|значительн[оы][ее]?\\s+|довольно\\s+)",
+    "message": "Vague intensifier. Use precise quantitative description.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "template-water",
+    "type": "regex",
+    "level": "warning",
+    "context": "intext",
+    "pattern": "(?i)(в\\s+настоящее\\s+время|на\\s+сегодняшний\\s+день|в\\s+современных\\s+условиях|на\\s+данном\\s+этапе|в\\s+последнее\\s+время|с\\s+каждым\\s+годом|с\\s+каждым\\s+днем|все\\s+больше|все\\s+чаще)",
+    "message": "Template water phrase («в настоящее время»). Remove or replace with specific context.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "cliche-opening",
+    "type": "regex",
+    "level": "warning",
+    "context": "intext",
+    "pattern": "(?i)(целью\\s+данной\\s+работы\\s+является|задачами\\s+данной\\s+работы\\s+являются|актуальность\\s+темы|объектом\\s+исследования\\s+является|предметом\\s+исследования|целью\\s+данного\\s+проекта|данная\\s+работа\\s+посвящен|данная\\s+статья\\s+посвящен)",
+    "message": "Cliche academic template opening. Replace with direct statement.",
+    "exclude_patterns": ["```[\\s\\S]*?```"]
+  },
+  {
+    "id": "filler-words",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\b(также\\s|кроме\\s+того|помимо\\s+этого|вместе\\s+с\\s+тем|при\\s+этом|причем|кстати|следует\\s+отметить|необходимо\\s+отметить|достаточно\\s+сказать|надо\\s+заметить|нужно\\s+сказать|безусловно|разумеется|конечно|естественно|очевидно|бесспорно|несомненно|в\\s+свою\\s+очередь|в\\s+целом|в\\s+частности|в\\s+основном)\\b",
+    "message": "Filler word. Remove for concise style.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "redundant-adverb",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)(успешно\\s+(?:реализован|применен|использован|разработан|внедрен|протестирован)|эффективно\\s+(?:работает|функционирует|используется|применяется))",
+    "message": "Redundant adverb. If it works it works — no need to say «успешно».",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "enum-and-also",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "а\\s+также",
+    "message": "Inflated enumerator «а также». Replace with «и» or comma.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "this-said",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\bданн(?:ый|ая|ое|ые|ого|ой|ому|ых|ыми|ом)\\s+(?:архитектур|подсистем|систем|модул|компонент|раздел|проект|метод|подход|алгоритм|структур|сред|класс|функци|подход|механизм|процесс|результат|исследовани|работ)",
+    "message": "Overused «данный» → «этот» or skip. Common AI academic filler.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "vague-booster-key",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\bключев(?:ой|ая|ые|ое|ых|ыми|ого|ому|ом)\\s+(?:аспект|особенност|структур|фактор|параметр|роль|задач|компонент|элемент|показател|момент|направлени|принцип|требовани)",
+    "message": "Vague booster «ключевой». Either remove or replace with specific term.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "vague-booster-main",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\bосновн(?:ой|ая|ые|ое|ых|ыми|ого|ому|ом)\\s+(?:вид|стать|цель|задач|направлени|принцип|функци|этап|способ|метод|средств|проблем|причин|источник|часть)",
+    "message": "Vague «основной» — specify which one exactly instead of «основной».",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "passive-foreseen",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\b(?:предусмотрен|предусмотрена|предусмотрено|предусмотрены)\\b",
+    "message": "Passive «предусмотрен» → active verb. E.g. «модуль реализует» not «модулем предусмотрено».",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-validation",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\bкорректност[ьи]\\s+(?:работ|функционировани|выполнени|реализаци|отображени|расчёт)",
+    "message": "AI self-validation marker. Instead of asserting «корректность работы» show evidence or remove.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-confirmed",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\bподтверди(?:л|ла|ло|ли)\\s+(?:корректност|работоспособност|соответстви|необходимост|эффективност|целесообразност|возможност|правильност|гипотез)",
+    "message": "AI self-validation «подтвердил». Replace with specific evidence statement.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "filler-in-quality",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "в\\s+качестве\\s+(?:чего|кого|примера|основ|инструмент|платформ|сред|баз|язык|движк|метод|решения|систем|объект)",
+    "message": "Filler «в качестве» → rewrite directly. E.g. «Unity выбран как...» not «в качестве... выбран Unity».",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "formula-lies-in",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)(?:заключается|заключаются)\\s+в\\s+(?:создани|разработк|построени|определени|реализаци|использовани|применени|описани|выявлени)",
+    "message": "AI formula «заключается в». Replace with direct statement.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "enum-namely",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "а\\s+именно",
+    "message": "Verbose «а именно» → colon or dash. Unnecessary enumeration starter.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "corresponding",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\bсоответствующ(?:ий|ая|ее|ие|их|ими|его|ей|ему)\\b",
+    "message": "Bureaucratic filler «соответствующий». Specify which or remove.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-definition-formula",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "представляет\\s+собой",
+    "message": "AI definition formula «представляет собой». Replace with direct «это» or verb.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-booster-visual",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)(наглядно\\s+демонстрир|наглядно\\s+показыва|наглядно\\s+иллюстрир|наглядно\\s+отображ)",
+    "message": "AI booster «наглядно демонстрирует». Remove — the image/table itself shows it.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-vague-spectrum",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)широк(?:ий|ая|ое|ие)\\s+(?:спектр|круг|диапазон|набор|ряд|перечень)",
+    "message": "Vague «широкий спектр/круг». Be specific about what exactly is included.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-summary-above",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)(вышесказанн|вышеизложенн|вышеперечисленн|всё\\s+выше)",
+    "message": "AI summary phrase «вышесказанное». Conclusion from LLM regurgitating itself — just conclude directly.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-passive-developed",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\b(?:разработан|разработана|разработано|разработаны|реализован|реализована|реализовано|реализованы|спроектирован|спроектирована|спроектировано|спроектированы)\\b",
+    "message": "Passive «разработан/реализован». Use active: «мы разработали» or «модуль реализует».",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-passive-conducted",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)\\b(?:проведен|проведена|проведено|проведены|выполнен|выполнена|выполнено|выполнены|осуществлен|осуществлена|осуществлено|осуществлены)\\b",
+    "message": "Passive «проведен/выполнен». Use active voice: «мы провели» or «команда выполнила».",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-is-adj",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)является\\s+(?:важн|необходим|целесообразн|актуальн|эффективн|значим|перспективн|оптимальн|целесообразн|очевидн|заметн|существенн|ключев|основн|главн|значительн)",
+    "message": "AI judgement «является [важным/необходимым]». Remove — let facts speak for themselves.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-meta-reference",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)в\\s+данн(?:ом|ой|ых|ом)\\s+(?:контекст|случа|раздел|проект|исследовани|стать|глав|подраздел|приложени)",
+    "message": "AI meta-reference «в данном контексте/случае». Refers to itself instead of stating content directly.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-conclusion-based",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)на\\s+основ[еа]\\s+(?:вышеизложенн|полученн|проведенн|выполненн|результат|анализ|эксперимент|исследовани|расчёт|данн)",
+    "message": "AI conclusion formula «на основе проведенного». Replace with specific evidence-based statement.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-both-and",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)как\\s+\\w+,\\s+так\\s+и\\s+\\w",
+    "message": "AI repetitor «как X, так и Y». Simplify to «и X, и Y» or list without both-and.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  },
+  {
+    "id": "ai-not-only-but",
+    "type": "regex",
+    "level": "info",
+    "context": "intext",
+    "pattern": "(?i)не\\s+тольк[оа]\\s+\\w+,\\s+но\\s+и\\s+\\w",
+    "message": "AI formula «не только, но и». Replace with direct «и» or list.",
+    "exclude_patterns": ["```[\\s\\S]*?```", "`[^`\\n]+`"]
+  }
+]

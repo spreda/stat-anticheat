@@ -1,0 +1,89 @@
+[
+  {
+    "id": "single-item-list",
+    "type": "structural",
+    "level": "error",
+    "kind": "single_item_list",
+    "message": "Single-item list found. Merge into paragraph text."
+  },
+  {
+    "id": "list-no-intro",
+    "type": "structural",
+    "level": "warning",
+    "kind": "list_no_intro",
+    "message": "List without introductory paragraph.",
+    "exclude_headings": [
+      "СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ",
+      "Список использованных источников"
+    ]
+  },
+  {
+    "id": "operator-comment",
+    "type": "regex",
+    "level": "error",
+    "pattern": "(?i)(?:скриншот|снимок|изображени|рисунок|диаграмм|схем|таблиц|график|иллюстраци).{0,30}(?:не\\s+(?:включен|представлен|приложен|добавлен|показан|вставлен|сделан)|нет|отсутствует|отсутствую|опущен)",
+    "message": "Operator-directed meta-comment. Remove section entirely.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```"
+    ]
+  },
+  {
+    "id": "code-block-length",
+    "type": "structural",
+    "level": "warning",
+    "kind": "code_block_length",
+    "max_lines": 10,
+    "message": "Code block longer than {max_lines} lines."
+  },
+  {
+    "id": "no-empty-heading",
+    "type": "structural",
+    "level": "info",
+    "kind": "empty_heading",
+    "message": "Empty heading or heading with only whitespace."
+  },
+  {
+    "id": "section-without-text",
+    "type": "structural",
+    "level": "info",
+    "kind": "section_no_text",
+    "message": "Section with heading followed immediately by next heading or end — no body content."
+  },
+  {
+    "id": "list-mixed-types",
+    "type": "structural",
+    "level": "warning",
+    "kind": "mixed_list_types",
+    "message": "Mixed bullet (-) and numbered (1.) lists in document."
+  },
+  {
+    "id": "intro-length",
+    "type": "structural",
+    "level": "warning",
+    "kind": "intro_too_long",
+    "max_lines": 30,
+    "message": "Введение занимает больше {max_lines} строк — должно умещаться на одной странице (примерно 30 строк)."
+  },
+  {
+    "id": "body-text-semicolon",
+    "type": "structural",
+    "level": "error",
+    "kind": "body_text_semicolon",
+    "message": "Точка с запятой (;) в теле абзаца. Точки с запятой допустимы только в элементах списков, определениях терминов и коде. В прозе используй точки."
+  },
+  {
+    "id": "list-item-uppercase",
+    "type": "structural",
+    "level": "error",
+    "kind": "list_item_uppercase",
+    "message": "Элемент списка начинается с заглавной буквы: «{text}» → первое слово должно быть со строчной. Исключения: имена собственные (ГОСТ, Unity, Windows).",
+    "exclude_headings": [
+      "ЛИТЕРАТУРА",
+      "Литература",
+      "СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ",
+      "Список использованных источников",
+      "БИБЛИОГРАФИЧЕСКИЙ СПИСОК",
+      "Библиографический список"
+    ]
+  }
+]

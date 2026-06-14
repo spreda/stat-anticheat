@@ -1,0 +1,29 @@
+[
+  {
+    "id": "undefined-placeholder",
+    "type": "structural",
+    "level": "error",
+    "kind": "undefined_placeholder",
+    "message": "Placeholder «{ph}» in .md not defined in any data file or inline ({{var=val}})."
+  },
+  {
+    "id": "calc-no-format",
+    "type": "regex",
+    "level": "info",
+    "pattern": "^\\$\\$\\s+\\w+\\s*=",
+    "message": "$$ line without format specifier. Add :.0f for integers, :,.2f for money, or explicit fmt.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```"
+    ]
+  },
+  {
+    "id": "calc-no-unit",
+    "type": "regex",
+    "level": "info",
+    "pattern": "^\\$\\$\\s+\\w+\\s*=.*[^#]$",
+    "message": "$$ calculation without unit comment (#). Add '# руб.', '# чел./ч' etc.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```"
+    ]
+  }
+]

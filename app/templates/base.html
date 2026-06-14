@@ -12,6 +12,7 @@
             <a href="/" class="{% if active_page == 'upload' %}active{% endif %}">Загрузка</a>
             <a href="/dataset" class="{% if active_page == 'dataset' %}active{% endif %}">Сохраненные матчи</a>
             <a href="/settings" class="{% if active_page == 'settings' %}active{% endif %}">Настройки</a>
+            <button class="theme-toggle" id="themeToggle" title="Переключить тему">🌙</button>
         </div>
     </nav>
     <div class="container">
@@ -21,4 +22,25 @@
         <p>Система обнаружения мошенничества в CS2 | Дипломный проект</p>
     </footer>
 </body>
+<script>
+(function() {
+    const KEY = 'cs2-anticheat-theme';
+    const toggle = document.getElementById('themeToggle');
+    function applyTheme(theme) {
+        document.body.classList.toggle('light-theme', theme === 'light');
+        if (toggle) toggle.textContent = theme === 'light' ? '☀️' : '🌙';
+    }
+    function toggleTheme() {
+        const next = document.body.classList.contains('light-theme') ? 'dark' : 'light';
+        applyTheme(next);
+        try { localStorage.setItem(KEY, next); } catch(e) {}
+    }
+    // Restore saved theme
+    try {
+        const saved = localStorage.getItem(KEY);
+        if (saved === 'light') applyTheme('light');
+    } catch(e) {}
+    if (toggle) toggle.addEventListener('click', toggleTheme);
+})();
+</script>
 </html>

@@ -1,11 +1,12 @@
 
 """
-Dataset browser: scans CS2CD dataset folders and returns match metadata.
+Dataset browser: scans CS2CD dataset folders and demo files, returns match metadata.
 """
 from pathlib import Path
 import json
 
-DATASET_DIR = Path(__file__).parent.parent.parent / "datasets"
+DATASET_DIR = Path(__file__).parent.parent.parent / "datasets" / "cs2cd_dataset"
+MATCHES_DIR = Path(__file__).parent.parent.parent / "datasets" / "matches"
 
 
 def _scan_folder(folder: str) -> list:
@@ -16,6 +17,26 @@ def _scan_folder(folder: str) -> list:
     json_files = {f.stem for f in folder_path.glob("*.json")}
     paired = sorted(int(s) for s in (parquet_files & json_files) if s.isdigit())
     return paired
+
+
+def _scan_demo_matches() -> list[dict]:
+    """Scan datasets/matches/ for .dem files and return metadata for each."""
+    if not MATCHES_DIR.exists():
+        return []
+    demos = sorted(MATCHES_DIR.glob("*.dem"))
+    matches = []
+    for i, f in enumerate(demos):
+        size_mb = f.stat().st_size / (1024 * 1024)
+        matches.append({
+            "idx": i + 1,
+            "filename": f.name,
+            "path": str(f.absolute()),
+            "size_mb": round(size_mb, 1),
+            "folder": "matches",
+            "cached": False,
+            "has_cheater": False,
+        })
+    return matches
 
 
 def _read_json(folder: str, idx: int) -> dict:
@@ -57,18 +78,40 @@ def list_matches(folder: str, page: int = 1, per_page: int = 24) -> dict:
     }
 
 
+def list_demo_matches(page: int = 1, per_page: int = 24) -> dict:
+    """List .demo matches with pagination."""
+    all_demos = _scan_demo_matches()
+    total_matches = len(all_demos)
+    total_pages = max(1, (total_matches + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_demos = all_demos[start:end]
+
+    return {
+        "matches": page_demos,
+        "page": page,
+        "total_pages": total_pages,
+        "total_matches": total_matches,
+    }
+
+
 def list_all_matches(filter_type: str = "all", page: int = 1, per_page: int = 24) -> dict:
-    """List matches across both folders with filtering and pagination."""
+    """List matches across both folders with filtering and pagination. Returns also demo match count."""
     clean_ids = _scan_folder("no_cheater_present")
     cheat_ids = _scan_folder("with_cheater_present")
+    demo_matches = _scan_demo_matches()
 
     clean_count = len(clean_ids)
     cheat_count = len(cheat_ids)
+    demo_count = len(demo_matches)
 
     if filter_type == "clean":
         all_matches = [(i, "no_cheater_present") for i in clean_ids]
     elif filter_type == "cheat":
         all_matches = [(i, "with_cheater_present") for i in cheat_ids]
+    elif filter_type == "demos":
+        all_matches = [(m["filename"], "matches") for m in demo_matches]
     else:
         all_matches = [(i, "no_cheater_present") for i in clean_ids] + [(i, "with_cheater_present") for i in cheat_ids]
         all_matches.sort(key=lambda x: x[0], reverse=True)
@@ -81,27 +124,45 @@ def list_all_matches(filter_type: str = "all", page: int = 1, per_page: int = 24
     page_matches = all_matches[start:end]
 
     matches = []
-    for idx, folder in page_matches:
-        data = _read_json(folder, idx)
-        cheaters = data.get("cheaters") or []
-        # quick row count without loading full parquet
-        pq_path = DATASET_DIR / folder / f"{idx}.parquet"
-        rows = 0
-        try:
-            import pyarrow.parquet as pq
-            meta = pq.read_metadata(str(pq_path))
-            rows = meta.num_rows
-        except Exception:
-            pass
-        matches.append({
-            "idx": idx,
-            "folder": folder,
-            "has_cheater": len(cheaters) > 0,
-            "players": len(cheaters) if cheaters else "?",
-            "rounds": len(data.get("gameRounds", [])),
-            "rows_formatted": f"{rows:,}".replace(",", " "),
-            "cached": False,
-        })
+    for idx_or_name, folder in page_matches:
+        if folder == "matches":
+            # Demo match
+            dm = next((m for m in demo_matches if m["filename"] == idx_or_name), None)
+            if dm:
+                matches.append({
+                    "idx": dm["idx"],
+                    "folder": "matches",
+                    "has_cheater": False,
+                    "filename": dm["filename"],
+                    "size_mb": dm["size_mb"],
+                    "players": "?",
+                    "rounds": "?",
+                    "rows_formatted": "—",
+                    "cached": dm["cached"],
+                })
+        else:
+            # CS2CD dataset match
+            idx = int(idx_or_name)
+            data = _read_json(folder, idx)
+            cheaters = data.get("cheaters") or []
+            pq_path = DATASET_DIR / folder / f"{idx}.parquet"
+            rows = 0
+            try:
+                import pyarrow.parquet as pq
+                meta = pq.read_metadata(str(pq_path))
+                rows = meta.num_rows
+            except Exception:
+                pass
+            matches.append({
+                "idx": idx,
+                "folder": folder,
+                "has_cheater": len(cheaters) > 0,
+                "filename": f"{idx}.parquet",
+                "players": len(cheaters) if cheaters else "?",
+                "rounds": len(data.get("gameRounds", [])),
+                "rows_formatted": f"{rows:,}".replace(",", " "),
+                "cached": False,
+            })
 
     return {
         "matches": matches,
@@ -110,6 +171,7 @@ def list_all_matches(filter_type: str = "all", page: int = 1, per_page: int = 24
         "total_matches": total_matches,
         "clean_count": clean_count,
         "cheat_count": cheat_count,
+        "demo_count": demo_count,
     }
 
 

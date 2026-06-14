@@ -1,0 +1,33 @@
+[
+  {
+    "id": "brittle-number",
+    "type": "regex",
+    "level": "warning",
+    "pattern": "(?i)(все\\s+\\d+|всех\\s+\\d+|всего\\s+\\d+|содержит\\s+\\d+|включает\\s+\\d+)\\s*(скрипт|класс|метод|файл|модуль|компонент|функци)",
+    "message": "Hardcoded total count. Remove or use {var}.",
+    "exclude_patterns": []
+  },
+  {
+    "id": "number-comma",
+    "type": "regex",
+    "level": "error",
+    "pattern": "(?<=\\d)\\.(?=\\d{3,})",
+    "message": "Western thousand separator (decimal dot). Use Russian format: space for thousands.",
+    "exclude_patterns": [
+      "\\d+\\.\\d+\\-\\d+",
+      "\\d+\\.\\d+\\.\\d+"
+    ]
+  },
+  {
+    "id": "number-space-decimal",
+    "type": "regex",
+    "level": "error",
+    "pattern": "(?<=\\d)\\.(?=\\d{2}(?:\\D|$))",
+    "message": "Decimal point. Use Russian comma.",
+    "exclude_patterns": [
+      "\\d+\\.\\d+\\-\\d+",
+      "\\d+\\.\\d+\\.\\d+",
+      "\\d+\\.\\d+"
+    ]
+  }
+]

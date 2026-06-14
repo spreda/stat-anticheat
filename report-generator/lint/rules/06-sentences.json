@@ -1,0 +1,40 @@
+[
+  {
+    "id": "long-sentence",
+    "type": "structural",
+    "level": "info",
+    "kind": "sentence_length",
+    "max_words": 20,
+    "message": "Sentence longer than {max_words} words ({count} wds). Split into shorter sentences (5-7 words each)."
+  },
+  {
+    "id": "very-long-sentence",
+    "type": "structural",
+    "level": "warning",
+    "kind": "sentence_length",
+    "max_words": 30,
+    "message": "Sentence very long ({count} wds). Must split — max 20 words."
+  },
+  {
+    "id": "clause-chain",
+    "type": "structural",
+    "level": "warning",
+    "kind": "clause_chain",
+    "message": "Multiple subordinate clauses in one sentence («который», «где», «что», «так как»). Break into shorter sentences."
+  },
+  {
+    "id": "run-on-sentence",
+    "type": "structural",
+    "level": "warning",
+    "kind": "run_on",
+    "message": "Run-on sentence with multiple commas joining independent clauses. Use periods."
+  },
+  {
+    "id": "consecutive-short",
+    "type": "structural",
+    "level": "info",
+    "kind": "consecutive_short",
+    "max_consecutive": 3,
+    "message": "Too many consecutive short sentences. Vary sentence length."
+  }
+]

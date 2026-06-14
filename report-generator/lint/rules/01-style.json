@@ -1,0 +1,114 @@
+[
+  {
+    "id": "first-person",
+    "type": "regex",
+    "level": "error",
+    "pattern": "(?i)\\b(я|мы|мной|мною|нами|нашего|нашей|моей|моего|мое|мои|наш|наши)\\b",
+    "message": "First person («я», «мы», «мой», «наш»). Use impersonal/formal.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]+`",
+      "\\{.*\\}"
+    ],
+    "context": "intext"
+  },
+  {
+    "id": "ai-slang",
+    "type": "regex",
+    "level": "warning",
+    "pattern": "(?i)(давайте\\s+разбер|давайте\\s+рассмотр|погруз|копн[ёе]|нырн[ёе]|окунут|пошагово|углуб[ия]мся|пройд[её]мся|отметим\\s+что|стоит\\s+отметить|важно\\s+понимать|нельзя\\s+не\\s+упомянуть|следует\\s+заметить|вишенк[ау]\\s+на|краеугольн|хочется\\s+отметить|подводн[ыие]\\s+камн[яи]|в\\s+следующ[еи]х\\s+стать[яе]х?|перейд[её]м\\s+к|начн[её]м\\s+с|приступим|разбер[её]мся|посмотр[ии]м\\s+как|обратим\\s+внимание|затронем|резюмиру|подытож|подвед[её]м\\s+итог|суть\\s+в\\s+том)",
+    "message": "AI-slang / marketing tone. Use formal academic style.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]+`"
+    ]
+  },
+  {
+    "id": "parenthetical-brackets",
+    "type": "regex",
+    "level": "warning",
+    "pattern": "\\([^)]+\\s*[—–]\\s*[^)]+\\)|\\([^)]+=[^)]+\\)",
+    "message": "Parenthetical explanation in brackets. Rewrite into prose.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]+`"
+    ]
+  },  {
+    "id": "inline-parenthesized-list",
+    "type": "regex",
+    "level": "warning",
+    "pattern": "\\([а-яёa-zA-Z][^)]+,[^)]+\\)",
+    "message": "Parenthesized inline list found. Rewrite into prose without brackets.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]+`",
+      "^\\|.*\\|$"
+    ]
+  },  {
+    "id": "english-verb",
+    "type": "regex",
+    "level": "info",
+    "pattern": "(?i)\\b(debug|commit|merge|push|pull|deploy|build|compile|refactor|hack|fork|branch)\\b",
+    "message": "English verb. Use Russian equivalent.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]+`"
+    ],
+    "context": "intext"
+  },
+  {
+    "id": "inline-bold",
+    "type": "regex",
+    "level": "warning",
+    "pattern": "\\*\\*[^*\\n]+\\*\\*",
+    "message": "Bold (`**text**`) inside paragraph body. Use only in headings, abbreviation lists, and bibliography entries.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]+`",
+      "^#{1,6}.*$",
+      "^\\s*[-*]\\s.*$",
+      "^\\s*\\d+\\.\\s.*$",
+      "^\\|.*\\|$",
+      "^Table:.*$",
+      "^\\d+\\..*$"
+    ]
+  },
+  {
+    "id": "italic-text",
+    "type": "regex",
+    "level": "error",
+    "pattern": "(?<!\\*)\\*[^*\\n]+\\*(?!\\*)",
+    "message": "Italic (`*text*`) is not allowed. Use plain text.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\\n]+`"
+    ]
+  },
+  {
+    "id": "text-bullet-list",
+    "type": "regex",
+    "level": "error",
+    "pattern": "^--\\s",
+    "message": "Text bullet (`-- `). Use `- ` for proper Word list elements instead of text characters.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```"
+    ]
+  },
+  {
+    "id": "lowercase-after-colon",
+    "type": "structural",
+    "level": "error",
+    "kind": "lowercase_after_colon",
+    "message": "После «{marker}» слово должно начинаться с прописной буквы: «{word}». Исключения: имена собственные и аббревиатуры."
+  },
+  {
+    "id": "prototype-result",
+    "type": "regex",
+    "level": "warning",
+    "pattern": "(?i)(?:на\\s+разработанном\\s+прототипе|функциональный\\s+прототип|готовый\\s+прототип|полностью\\s+функциональный\\s+прототип)",
+    "message": "Слово «прототип» в описании результата. Замени на «приложение», «продукт», «система». Допустимо только для этапа работы («создать прототип»).",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```"
+    ]
+  }
+]

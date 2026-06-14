@@ -1,0 +1,62 @@
+[
+  {
+    "id": "em-dash",
+    "type": "regex",
+    "level": "error",
+    "pattern": "[—–]",
+    "message": "Em-dash (—) or en-dash (–) found. Use -- (two ASCII hyphens) in .md source. Pandoc converts -- to proper dash in .docx.",
+    "fix": {"old": "[—–]", "new": "--", "is_regex": true},
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\n]+`"
+    ],
+    "exclude_headings": [
+      "СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ",
+      "Список использованных источников",
+      "БИБЛИОГРАФИЧЕСКИЙ СПИСОК",
+      "Библиографический список",
+      "ЛИТЕРАТУРА",
+      "Литература"
+    ]
+  },
+  {
+    "id": "quotes-mismatch",
+    "type": "regex",
+    "level": "warning",
+    "pattern": "\"\\w|\"\\w|'\\w",
+    "message": "Straight quotes found. Use « » or „ “ (Russian typographic quotes) for body text.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\n]+`"
+    ]
+  },
+  {
+    "id": "double-space",
+    "type": "regex",
+    "level": "info",
+    "pattern": "  ",
+    "message": "Double space found. Use single space.",
+    "fix": {"old": "  ", "new": " "},
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\n]+`",
+      "^\\|.*\\|$",
+      "^\\s*\\$\\$",
+      "^\\s*\\$\\$\\$",
+      "^\\s*[-*]\\s.*$"
+    ]
+  },
+  {
+    "id": "leading-zeros",
+    "type": "regex",
+    "level": "info",
+    "pattern": "(?<![\\d])0[\\d]+",
+    "message": "Leading zero in number (e.g. «07»). Use without leading zero unless part of identifier.",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```",
+      "`[^`\n]+`",
+      "^\\d{4}\\.",
+      "\\d+\\.\\d+\\."
+    ]
+  }
+]

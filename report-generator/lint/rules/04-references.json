@@ -1,0 +1,33 @@
+[
+  {
+    "id": "table-ref-exists",
+    "type": "structural",
+    "level": "warning",
+    "kind": "table_ref_exists",
+    "message": "Table reference «{ref}» found in text but no corresponding «Table: {ref}» caption exists in document."
+  },
+  {
+    "id": "figure-ref-exists",
+    "type": "structural",
+    "level": "warning",
+    "kind": "figure_ref_exists",
+    "message": "Figure reference «{ref}» found in text but no corresponding image markup exists (e.g. «{ref}»)."
+  },
+  {
+    "id": "empty-alt-text",
+    "type": "regex",
+    "level": "info",
+    "pattern": "!\\[\\]\\([^)]+\\)",
+    "message": "Image with empty alt text. Add descriptive alt text: «![Описание](path)».",
+    "exclude_patterns": [
+      "```[\\s\\S]*?```"
+    ]
+  },
+  {
+    "id": "broken-image-path",
+    "type": "structural",
+    "level": "warning",
+    "kind": "broken_image_path",
+    "message": "Image path «{path}» does not exist relative to content directory."
+  }
+]

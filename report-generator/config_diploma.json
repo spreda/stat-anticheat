@@ -1,0 +1,12 @@
+{
+    "report_type": "diploma_report",
+    "report_type_label": "ДИПЛОМНАЯ РАБОТА",
+    "template": "diploma_report",
+    "data": {
+        "student": "data/student.json",
+        "style": "data/style.json"
+    },
+    "paths": {
+        "output_dir": "output"
+    }
+}

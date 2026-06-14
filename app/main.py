@@ -1,14 +1,6 @@
 """
 FastAPI backend for CS2 Anti-Cheat Analyzer.
 """
-import sys
-from pathlib import Path
-
-# Allow running main.py from inside the app directory
-_app_root = Path(__file__).resolve().parent.parent
-if str(_app_root) not in sys.path:
-    sys.path.insert(0, str(_app_root))
-
 from fastapi import FastAPI, Request, UploadFile, File, Form, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,9 +11,10 @@ import json
 from datetime import datetime
 
 from app.services.analyzer import analyze_match, extract_match_info, load_model
-from app.services.dataset_browser import list_all_matches, get_match_info
+from app.services.dataset_browser import list_all_matches, get_match_info, list_demo_matches
 from app.services.cache import load_cached, save_cached
 from app.db import init_db, get_job, create_job, get_job_stats
+from app.ml.dem_parser import parse_dem_to_cache
 
 BASE_DIR = Path(__file__).parent
 UPLOADS_DIR = BASE_DIR.parent / "uploads"
@@ -61,17 +54,26 @@ async def upload_file(
 ):
     """Upload a match file for analysis."""
     # Validate
-    if not file.filename.endswith(".parquet"):
-        return JSONResponse({"error": "Only .parquet files accepted"}, status_code=400)
+    if not (file.filename.endswith(".parquet") or file.filename.endswith(".dem")):
+        return JSONResponse({"error": "Only .parquet or .dem files accepted"}, status_code=400)
 
     job_id = str(uuid.uuid4())
     job_dir = UPLOADS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
-    # Save file
-    file_path = job_dir / "match.parquet"
-    with open(file_path, "wb") as f:
+    # Save uploaded file
+    uploaded_path = job_dir / file.filename
+    with open(uploaded_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    # Convert .dem → .parquet + .json if needed
+    if file.filename.endswith(".dem"):
+        pq_path, json_path = parse_dem_to_cache(uploaded_path, job_dir)
+        match_file_path = pq_path
+    else:
+        match_file_path = str(job_dir / "match.parquet")
+        import os
+        os.rename(uploaded_path, match_file_path)
 
     # Save metadata
     meta_path = job_dir / "metadata.json"
@@ -79,10 +81,24 @@ async def upload_file(
         json.dump({"original_name": file.filename, "uploaded_at": datetime.utcnow().isoformat(), "user_metadata": json.loads(metadata)}, f)
 
     # Create job record
-    create_job(job_id, str(file_path), file.filename)
+    create_job(job_id, str(match_file_path), file.filename)
 
-    # Queue analysis
-    background_tasks.add_task(analyze_match, job_id, str(file_path))
+    # Queue analysis — pass events if .dem was converted
+    def _run_analysis():
+        import json as _json
+        # Try to load events.json if it exists next to the parquet
+        _pq_dir = Path(match_file_path).parent
+        _json_candidates = list(_pq_dir.glob("*.json"))
+        _evts = None
+        if _json_candidates:
+            try:
+                with open(_json_candidates[0], "r", encoding="utf-8") as _f:
+                    _evts = _json.load(_f)
+            except Exception:
+                pass
+        analyze_match(job_id, str(match_file_path), events=_evts)
+
+    background_tasks.add_task(_run_analysis)
 
     return {"job_id": job_id, "status": "pending"}
 
@@ -241,6 +257,76 @@ async def report_dataset_page(request: Request, folder: str, idx: int, job: str 
             }))
 
     # No job and no cache — redirect to dataset
+    return RedirectResponse(url="/dataset")
+
+
+# ─────────────────────────────────────────
+# Demo match routes (datasets/matches/)
+# ─────────────────────────────────────────
+
+MATCHES_DIR = BASE_DIR.parent / "datasets" / "matches"
+
+
+@app.get("/analyze-demo/{filename:path}")
+async def analyze_demo(
+    filename: str,
+    background_tasks: BackgroundTasks,
+):
+    """Analyze a .dem file from datasets/matches/."""
+    demo_path = MATCHES_DIR / filename
+    if not demo_path.exists() or not filename.endswith(".dem"):
+        return JSONResponse({"error": "Demo file not found"}, status_code=404)
+
+    job_id = str(uuid.uuid4())
+    job_dir = UPLOADS_DIR / job_id
+    job_dir.mkdir(exist_ok=True)
+
+    # Convert .dem → parquet + json
+    pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
+    create_job(job_id, pq_path, f"demo:{filename}")
+
+    def _analyze():
+        events = {}
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                events = json.load(f)
+        except Exception:
+            events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
+
+        import pandas as pd
+        tick_df = pd.read_parquet(pq_path)
+        match_info = extract_match_info(tick_df, events, "matches", filename)
+        analyze_match(job_id, pq_path, events=events, match_info=match_info)
+
+    background_tasks.add_task(_analyze)
+    return RedirectResponse(url=f"/report-demo/{filename}?job={job_id}")
+
+
+@app.get("/report-demo/{filename:path}", response_class=HTMLResponse)
+async def report_demo_page(request: Request, filename: str, job: str = Query(None)):
+    """Show report for a demo match — polling or done."""
+    if job:
+        job_row = get_job(job)
+        if job_row:
+            status = job_row.get("status", "pending")
+            result = json.loads(job_row["result"]) if job_row.get("result") else None
+            if status == "done" and result:
+                from app.ml.features import FEATURE_EXPLANATIONS
+                return HTMLResponse(render_template("report.html", {
+                    "request": request,
+                    "job": {"filename": f"demo:{filename}", "status": "done", "id": job},
+                    "result": result,
+                    "feature_explanations": FEATURE_EXPLANATIONS,
+                    "active_page": "dataset",
+                }))
+            return HTMLResponse(render_template("polling.html", {
+                "request": request,
+                "job_id": job,
+                "redirect_url": f"/report-demo/{filename}?job={job}",
+                "active_page": "dataset",
+            }))
+
+    # No job — redirect to dataset
     return RedirectResponse(url="/dataset")
 
 

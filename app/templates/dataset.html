@@ -9,10 +9,24 @@
     <a href="/dataset?type=all&page=1" class="{% if filter_type == 'all' %}active{% endif %}">Все</a>
     <a href="/dataset?type=clean&page=1" class="{% if filter_type == 'clean' %}active{% endif %}">Чистые</a>
     <a href="/dataset?type=cheat&page=1" class="{% if filter_type == 'cheat' %}active{% endif %}">С читерами</a>
+    <a href="/dataset?type=demos&page=1" class="{% if filter_type == 'demos' %}active{% endif %}">.dem файлы</a>
 </div>
 
 <div class="match-grid">
     {% for match in matches %}
+    {% if match.folder == 'matches' %}
+    <div class="match-card">
+        <div class="match-header">
+            <span class="match-badge">Демо</span>
+            <span class="match-id">{{ match.filename }}</span>
+        </div>
+        <div class="match-body">
+            <p><strong>Размер:</strong> {{ match.size_mb }} МБ</p>
+            <p><strong>Путь:</strong> datasets/matches/</p>
+        </div>
+        <a href="/analyze-demo/{{ match.filename }}" class="match-btn">Анализировать</a>
+    </div>
+    {% else %}
     <div class="match-card {% if match.has_cheater %}cheat{% else %}clean{% endif %}">
         <div class="match-header">
             <span class="match-badge">{{ 'Чит' if match.has_cheater else 'Чисто' }}</span>
@@ -28,6 +42,7 @@
         </div>
         <a href="/analyze-dataset/{{ match.folder }}/{{ match.idx }}" class="match-btn">Анализировать</a>
     </div>
+    {% endif %}
     {% endfor %}
 </div>
 

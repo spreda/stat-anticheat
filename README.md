@@ -1,108 +1,110 @@
 # CS2 Anti-Cheat Analyzer
 
-Offline analysis system for Counter-Strike 2 match recordings. Upload a `.parquet` match file and receive per-player risk scores with explainable feature breakdowns.
+Офлайн-система анализа записей матчей Counter-Strike 2. Загрузите `.parquet` файл матча и получите оценку риска для каждого игрока с расшифровкой признаков.
 
-## Quick Start
+## Быстрый старт
 
 ```bash
-# 1. Install dependencies
+# 1. Установка зависимостей
 pip install -r requirements.txt
 
-# 2. Train model (demo on 20 files, or full dataset)
-python scripts/train_demo.py      # quick demo (~2 min)
-python scripts/train_subset.py    # 100 files for better accuracy
+# 2. Обучение модели (демо на 20 файлов или полный набор)
+python scripts/train_demo.py      # быстрая демо (~2 мин)
+python scripts/train_subset.py    # 100 файлов для лучшей точности
 
-# 3. Start server
+# 3. Запуск сервера
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
-# 4. Open browser
+# 4. Открыть браузер
 # http://127.0.0.1:8000
 ```
 
-## Project Structure
+## Структура проекта
 
 ```
 anticheat/
 ├── app/
-│   ├── main.py              # FastAPI server
-│   ├── db.py                # SQLite job tracking
+│   ├── main.py              # FastAPI сервер
+│   ├── db.py                # SQLite отслеживание задач
 │   ├── services/
-│   │   └── analyzer.py      # feature extraction + model scoring
+│   │   └── analyzer.py      # извлечение признаков + оценка модели
 │   ├── ml/
-│   │   └── features.py      # vectorized feature engineering (33 feats)
+│   │   └── features.py      # векторный инжиниринг признаков (33 признака)
 │   ├── templates/
-│   │   ├── upload.html      # drag-and-drop upload
-│   │   ├── report.html      # risk score table
-│   │   └── error.html       # error page
+│   │   ├── upload.html      # загрузка drag-and-drop
+│   │   ├── report.html      # таблица с оценками риска
+│   │   └── error.html       # страница ошибки
 │   └── static/css/
-│       └── style.css        # dark theme
+│       └── style.css        # тёмная тема
 ├── scripts/
-│   ├── eda.py               # dataset inspection
-│   ├── train_demo.py        # quick 20-file training
-│   ├── train_subset.py      # 100-file subset training
-│   └── test_one.py          # single-file profiling
+│   ├── eda.py               # исследование набора данных
+│   ├── train_demo.py        # быстрое обучение на 20 файлах
+│   ├── train_subset.py      # обучение на 100 файлах
+│   └── test_one.py          # профилирование одного файла
 ├── models/
-│   └── model_v1.joblib      # trained XGBoost model
+│   └── model_v1.joblib      # обученная модель XGBoost
 ├── datasets/
-│   └── cs2cd_dataset/       # 795 matches (parquet + JSON)
-├── uploads/                 # uploaded files + jobs.db
+│   └── cs2cd_dataset/       # 795 матчей (parquet + JSON)
+├── uploads/                 # загруженные файлы + jobs.db
 ├── requirements.txt
 ├── PLAN_MVP.md
 └── PLAN_FULL.md
 ```
 
-## How It Works
+## Как это работает
 
-1. **Upload** — analyst uploads a `.parquet` match file via web UI
-2. **Feature Engineering** — system extracts 33 anti-cheat features per player:
-   - **Aim**: pitch/yaw delta std, mouse magnitude, scope time
-   - **Combat**: KDR, headshot ratio, damage per round, ace/4k/3k rounds
-   - **Movement**: velocity stats, airborne/duck/walk ratios
-   - **Actions**: fire/reload/zoom button rates
-   - **JSON Events**: kills, headshots, wallbangs from event data
-3. **ML Scoring** — XGBoost classifier outputs probability → risk score 0-100
-4. **Report** — players sorted by risk, flagged if above threshold
+1. **Загрузка** — аналитик загружает `.parquet` файл матча через веб-интерфейс
+2. **Инжиниринг признаков** — система извлекает 33 античит-признака на каждого игрока:
+   - **Прицел**: std дельты pitch/yaw, магнитуда мыши, время в прицеле
+   - **Бой**: KDR, процент хедшотов, урон за раунд, ace/4k/3k раунды
+   - **Движение**: статистика скорости, соотношение в воздухе/присед/ходьба
+   - **Действия**: частота нажатий огонь/перезарядка/зум
+   - **JSON события**: убийства, хедшоты, сквозь стены из данных событий
+3. **ML оценка** — XGBoost классификатор выдаёт вероятность → оценка риска 0–100
+4. **Отчёт** — игроки отсортированы по риску, помечены если выше порога
 
-## Dataset
+## Набор данных
 
-- **Source**: CS2CD (Counter-Strike 2 Cheat Detection Dataset)
-- **Size**: 795 matches — 478 clean, 317 with cheaters
-- **Format**: `.parquet` (tick-level per-player) + `.json` (events & labels)
-- **Label Quality**: Only "with cheater" matches verified via VAC bans. Clean matches unverified — ~2.8% may contain undetected cheaters.
+- **Источник**: CS2CD (Counter-Strike 2 Cheat Detection Dataset)
+- **Размер**: 795 матчей — 478 чистых, 317 с читерами
+- **Формат**: `.parquet` (тиковый уровень на игрока) + `.json` (события и метки)
+- **Качество меток**: Только матчи «с читером» подтверждены банами VAC. Чистые матчи не верифицированы — ~2.8% могут содержать необнаруженных читеров.
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Upload page |
-| `/upload` | POST | Upload parquet file, returns job_id |
-| `/job/{job_id}` | GET | Job status and results (JSON) |
-| `/report/{job_id}` | GET | HTML report page |
-| `/docs` | GET | Auto-generated API docs |
+| Endpoint | Метод | Описание |
+|----------|-------|----------|
+| `/` | GET | Страница загрузки |
+| `/upload` | POST | Загрузить parquet файл, возвращает job_id |
+| `/job/{job_id}` | GET | Статус задачи и результаты (JSON) |
+| `/report/{job_id}` | GET | HTML страница отчёта |
+| `/docs` | GET | Автоматически сгенерированная документация API |
 
-## Model Performance (Demo)
+## Производительность модели (Демо)
 
-Trained on 20 files (200 player-records):
+Обучена на 20 файлах (200 записей игроков):
 - **AUC**: 0.999
 - **F1**: 0.975
-- **Top Features**: `json_headshots`, `move_vel_mean`, `move_walk_ratio`, `combat_kdr`
+- **Ключевые признаки**: `json_headshots`, `move_vel_mean`, `move_walk_ratio`, `combat_kdr`
 
-## Tech Stack
+> Примечание: Демо-модель может переобучаться. Запустите `train_subset.py` на 100+ файлах для продакшн-использования.
 
-- **Backend**: Python 3.14, FastAPI, SQLite
+## Технологический стек
+
+- **Бэкенд**: Python 3.14, FastAPI, SQLite
 - **ML**: pandas, pyarrow, scikit-learn, XGBoost, joblib
-- **Frontend**: Jinja2 + vanilla JS, dark theme CSS
+- **Фронтенд**: Jinja2 + vanilla JS, тёмная тема CSS
 
-## Next Steps (Full Project)
+## Следующие шаги (Полный проект)
 
-See `PLAN_FULL.md` for complete roadmap including:
-- Full dataset training with cross-validation
-- Temporal features (reaction time, pre-fire, wallbang rate)
-- Admin dashboard and job list
-- Batch upload and export
-- pytest test suite
-- Docker deployment
+См. `PLAN_FULL.md` для полного плана, включая:
+- Обучение на полном наборе данных с кросс-валидацией
+- Временные признаки (время реакции, pre-fire, процент сквозь стены)
+- Панель администратора и список задач
+- Пакетная загрузка и экспорт
+- Набор тестов pytest
+- Docker развёртывание
 
-## License
+## Лицензия
 
-Diploma project. Dataset from CS2CD — cite appropriately.
+Дипломный проект. Набор данных от CS2CD — указывайте при цитировании.

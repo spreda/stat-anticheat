@@ -62,7 +62,7 @@
             <tbody>
                 {% for player in result.players %}
                 <tr class="player-row {% if player.flagged %}flagged{% endif %}" data-risk="{{ player.risk_score }}" data-kdr="{{ player.features.kdr }}" data-hs="{{ player.features.headshot_ratio }}" data-damage="{{ player.features.damage_per_round }}" data-yaw="{{ player.features.aim_yaw_std }}" data-mouse="{{ player.features.mouse_mag_mean }}">
-                    <td>{{ player.steamid }}</td>
+                    <td title="{{ player.steamid }}"><strong>{{ player.name }}</strong><br><span class="player-steamid">{{ player.steamid }}</span></td>
                     <td>
                         <div class="risk-bar" title="Вероятность читерства: {{ (player.confidence * 100) | round(1) }}%">
                             <div class="risk-fill" style="width: {{ player.risk_score }}%; background: {% if player.risk_score > 70 %}#e74c3c{% elif player.risk_score > 40 %}#f39c12{% else %}#2ecc71{% endif %}"></div>

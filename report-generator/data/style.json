@@ -1,0 +1,17 @@
+{
+    "font_name": "Times New Roman",
+    "font_size": 14,
+    "line_spacing": 1.5,
+    "left_margin_cm": 3,
+    "right_margin_cm": 1.5,
+    "top_margin_cm": 2,
+    "bottom_margin_cm": 2,
+    "first_indent_cm": 1.25,
+    "table_font_size": 12,
+    "heading_levels": {
+        "1": {"size": 14, "page_break": true},
+        "2": {"size": 14, "page_break": false},
+        "3": {"size": 14, "page_break": false},
+        "4": {"size": 14, "page_break": false}
+    }
+}

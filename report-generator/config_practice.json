@@ -1,0 +1,12 @@
+{
+    "report_type": "practice_report",
+    "report_type_label": "ОТЧЁТ ПО ПРЕДДИПЛОМНОЙ ПРАКТИКЕ",
+    "template": "practice_report",
+    "data": {
+        "student": "data/student.json",
+        "style": "data/style.json"
+    },
+    "paths": {
+        "output_dir": "output"
+    }
+}

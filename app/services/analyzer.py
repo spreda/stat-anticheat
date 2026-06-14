@@ -1,5 +1,6 @@
 """
 Analysis service: orchestrates feature extraction + model scoring.
+Supports both legacy model_v1.joblib and new ensemble (supervised + anomaly).
 """
 from pathlib import Path
 import json
@@ -13,54 +14,82 @@ from app.db import update_job
 
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
-# Feature name → display name mapping for SHAP contributions
+# Feature name → display name mapping for contributions
 FEATURE_DISPLAY_NAMES = {
-    "aim_pitch_delta_mean": "aim_pitch_delta_mean",
-    "aim_pitch_delta_std": "aim_pitch_delta_std",
-    "aim_yaw_delta_mean": "aim_yaw_delta_mean",
-    "aim_yaw_delta_std": "aim_yaw_delta_std",
-    "aim_mouse_mag_mean": "aim_mouse_mag_mean",
-    "aim_mouse_mag_std": "aim_mouse_mag_std",
-    "aim_fov_changes": "aim_fov_changes",
-    "aim_scope_time_ratio": "aim_scope_time_ratio",
-    "combat_kdr": "combat_kdr",
-    "combat_headshot_ratio": "combat_headshot_ratio",
-    "combat_damage_per_round": "combat_damage_per_round",
-    "combat_kills_per_round": "combat_kills_per_round",
-    "combat_ace_rounds": "combat_ace_rounds",
-    "combat_4k_rounds": "combat_4k_rounds",
-    "combat_3k_rounds": "combat_3k_rounds",
-    "combat_shots_fired": "combat_shots_fired",
-    "move_vel_mean": "move_vel_mean",
-    "move_vel_std": "move_vel_std",
-    "move_vel_max": "move_vel_max",
-    "move_airborne_ratio": "move_airborne_ratio",
-    "move_duck_mean": "move_duck_mean",
-    "move_walk_ratio": "move_walk_ratio",
-    "move_fall_vel_max": "move_fall_vel_max",
-    "btn_fire_rate": "btn_fire_rate",
-    "btn_reload_rate": "btn_reload_rate",
-    "btn_zoom_rate": "btn_zoom_rate",
-    "json_kills": "json_kills",
-    "json_headshots": "json_headshots",
-    "json_wallbangs": "json_wallbangs",
-    "json_headshot_ratio": "json_headshot_ratio",
+    "aim_pitch_delta_mean": "Наклон прицела (mean)",
+    "aim_pitch_delta_std": "Наклон прицела (std)",
+    "aim_yaw_delta_mean": "Поворот прицела (mean)",
+    "aim_yaw_delta_std": "Поворот прицела (std)",
+    "aim_mouse_mag_mean": "Амплитуда мыши (mean)",
+    "aim_mouse_mag_std": "Амплитуда мыши (std)",
+    "aim_fov_changes": "Изменения FOV",
+    "aim_scope_time_ratio": "Доля времени в оптике",
+    "combat_kdr": "KDR",
+    "combat_headshot_ratio": "Доля хедшотов",
+    "move_vel_mean": "Скорость (mean)",
+    "move_vel_std": "Скорость (std)",
+    "move_vel_max": "Скорость (max)",
+    "move_airborne_ratio": "Доля времени в воздухе",
+    "move_duck_mean": "Доля приседаний",
+    "move_walk_ratio": "Доля ходьбы",
+    "btn_fire_rate": "Частота стрельбы",
+    "btn_reload_rate": "Частота перезарядки",
+    "btn_zoom_rate": "Частота использования оптики",
+    "json_kills": "Убийства (события)",
+    "json_headshots": "Хедшоты (события)",
+    "json_wallbangs": "Убийства через стены",
+    "json_headshot_ratio": "Доля хедшотов (события)",
 }
 
 
 def load_model():
-    """Load trained model artifact."""
+    """Load trained model artifact.
+
+    Priority:
+      1. ensemble_config_v1.joblib + supervised_v1.joblib + isolation_forest_v1.joblib (new ensemble)
+      2. model_v1.joblib (legacy single model)
+    """
+    ensemble_path = MODELS_DIR / "ensemble_config_v1.joblib"
+    supervised_path = MODELS_DIR / "supervised_v1.joblib"
+    iso_path = MODELS_DIR / "isolation_forest_v1.joblib"
+
+    if ensemble_path.exists() and supervised_path.exists() and iso_path.exists():
+        try:
+            ensemble = joblib.load(ensemble_path)
+            supervised = joblib.load(supervised_path)
+            iso = joblib.load(iso_path)
+            return {
+                "type": "ensemble",
+                "model": supervised["model"],
+                "scaler": ensemble["scaler"],
+                "feature_names": ensemble["feature_names"],
+                "threshold": ensemble["threshold"],
+                "supervised_weight": ensemble["supervised_weight"],
+                "anomaly_weight": ensemble["anomaly_weight"],
+                "iso_model": iso["model"],
+            }
+        except Exception:
+            pass
+
+    # Legacy fallback
     model_path = MODELS_DIR / "model_v1.joblib"
-    if not model_path.exists():
-        return None
-    return joblib.load(model_path)
+    if model_path.exists():
+        artifact = joblib.load(model_path)
+        artifact["type"] = "single"
+        return artifact
+    return None
 
 
-def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: int) -> dict:
+def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: str | int) -> dict:
     """Infer match metadata from tick data and JSON events."""
     map_name = "Unknown"
     if "map_name" in tick_df.columns:
-        map_name = tick_df["map_name"].dropna().iloc[0] if not tick_df["map_name"].dropna().empty else "Unknown"
+        raw = tick_df["map_name"].dropna()
+        if not raw.empty:
+            map_name = raw.iloc[0]
+            # Strip "de_" prefix for display
+            if map_name.startswith("de_"):
+                map_name = map_name[3:].capitalize()
     elif "map" in tick_df.columns:
         map_name = tick_df["map"].dropna().iloc[0] if not tick_df["map"].dropna().empty else "Unknown"
 
@@ -72,7 +101,7 @@ def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: in
     elif "round" in tick_df.columns:
         rounds = int(tick_df["round"].nunique())
 
-    duration_ticks = len(tick_df)
+    duration_ticks = int(tick_df["tick"].nunique()) if "tick" in tick_df.columns else len(tick_df)
     score = "?"
     game_rounds = events.get("gameRounds", [])
     if game_rounds and isinstance(game_rounds, list) and game_rounds:
@@ -82,6 +111,11 @@ def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: in
             ct_score = last.get("ctScore")
             if t_score is not None and ct_score is not None:
                 score = f"{t_score}:{ct_score}"
+
+    # Convert ticks to minutes
+    duration_sec = duration_ticks // 64
+    duration_min = duration_sec // 60
+    duration_str = f"{duration_min}:{duration_sec % 60:02d}"
 
     cheaters = events.get("cheaters", [])
     cheat_names = [c.get("steamid", "?") for c in cheaters]
@@ -93,8 +127,10 @@ def extract_match_info(tick_df: pd.DataFrame, events: dict, folder: str, idx: in
 
     return {
         "map_name": map_name,
+        "map": map_name,              # alias for template compatibility
         "rounds": rounds,
         "duration_ticks": duration_ticks,
+        "duration": duration_str,     # alias formatted as MM:SS
         "score": score,
         "narrative": narrative,
         "dataset_folder": folder,
@@ -233,7 +269,8 @@ def get_shap_contributions(row: pd.Series, feature_names: list, scaler, booster,
 
 
 def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: int = 3) -> list:
-    """Get top contributing factor patterns (combinations) for a player's risk score."""
+    """Get top contributing factor patterns for a player's risk score.
+    Works with the 23-feature ensemble model."""
     patterns = []
 
     def safe_get(key, default=0):
@@ -244,14 +281,13 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
 
     kdr = safe_get("combat_kdr")
     hs_ratio = safe_get("combat_headshot_ratio")
-    dpr = safe_get("combat_damage_per_round")
     yaw_std = safe_get("aim_yaw_delta_std")
     mouse_mag = safe_get("aim_mouse_mag_mean")
     wallbangs = safe_get("json_wallbangs")
     fire_rate = safe_get("btn_fire_rate")
-    kpr = safe_get("combat_kills_per_round")
     pitch_std = safe_get("aim_pitch_delta_std")
     vel_std = safe_get("move_vel_std")
+    vel_mean = safe_get("move_vel_mean")
 
     # Pattern 1: High KDR + high headshot ratio
     if kdr > 3 and hs_ratio > 0.6:
@@ -279,20 +315,15 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
             "explanation": "Малая амплитуда мыши при высоком KDR"
         })
 
-    # Pattern 3: High damage + wallbangs
-    if dpr > 120 and wallbangs > 1:
-        patterns.append({
-            "name": "combat_damage_per_round",
-            "value": f"{dpr:.0f}",
-            "explanation": "Высокий урон с убийствами через стены"
-        })
+    # Pattern 3: Wallbangs (cheater indicator)
+    if wallbangs > 1:
         patterns.append({
             "name": "json_wallbangs",
             "value": f"{int(wallbangs)}",
-            "explanation": "Высокий урон с убийствами через стены"
+            "explanation": "Убийства через стены — подозрительная активность"
         })
 
-    # Pattern 4: Low yaw/pitch delta
+    # Pattern 4: Low yaw/pitch delta (aimbot indicator)
     if yaw_std < 1.0 and pitch_std < 1.0:
         patterns.append({
             "name": "aim_yaw_delta_std",
@@ -305,20 +336,7 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
             "explanation": "Низкое отклонение углов поворота"
         })
 
-    # Pattern 5: High KPR + high DPR
-    if kpr > 2.0 and dpr > 150:
-        patterns.append({
-            "name": "combat_kills_per_round",
-            "value": f"{kpr:.1f}",
-            "explanation": "Высокое количество убийств и урона за раунд"
-        })
-        patterns.append({
-            "name": "combat_damage_per_round",
-            "value": f"{dpr:.0f}",
-            "explanation": "Высокое количество убийств и урона за раунд"
-        })
-
-    # Pattern 6: Low velocity std + high KDR
+    # Pattern 5: Low velocity std + high KDR (triggerbot with movement lock)
     if vel_std < 20 and kdr > 2.5:
         patterns.append({
             "name": "move_vel_std",
@@ -331,7 +349,7 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
             "explanation": "Низкий разброс скорости при высоком KDR"
         })
 
-    # Pattern 7: High fire rate + headshots
+    # Pattern 6: High fire rate + headshots
     if fire_rate > 0.15 and hs_ratio > 0.5:
         patterns.append({
             "name": "btn_fire_rate",
@@ -346,20 +364,16 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
 
     # Fallback: individual suspicious features if no patterns matched
     if not patterns:
-        individual = []
         if kdr > 3:
-            individual.append({"name": "combat_kdr", "value": f"{kdr:.1f}", "explanation": "KDR выше 3"})
+            patterns.append({"name": "combat_kdr", "value": f"{kdr:.1f}", "explanation": "KDR выше 3"})
         if hs_ratio > 0.7:
-            individual.append({"name": "combat_headshot_ratio", "value": f"{hs_ratio*100:.0f}%", "explanation": "Доля хедшотов выше 70%"})
-        if dpr > 150:
-            individual.append({"name": "combat_damage_per_round", "value": f"{dpr:.0f}", "explanation": "Урон за раунд выше 150"})
+            patterns.append({"name": "combat_headshot_ratio", "value": f"{hs_ratio*100:.0f}%", "explanation": "Доля хедшотов выше 70%"})
         if yaw_std < 1.0:
-            individual.append({"name": "aim_yaw_delta_std", "value": f"{yaw_std:.2f}", "explanation": "Отклонение yaw ниже 1.0"})
+            patterns.append({"name": "aim_yaw_delta_std", "value": f"{yaw_std:.2f}", "explanation": "Отклонение yaw ниже 1.0"})
         if mouse_mag < 3:
-            individual.append({"name": "aim_mouse_mag_mean", "value": f"{mouse_mag:.1f}", "explanation": "Амплитуда мыши ниже 3"})
+            patterns.append({"name": "aim_mouse_mag_mean", "value": f"{mouse_mag:.1f}", "explanation": "Амплитуда мыши ниже 3"})
         if wallbangs > 2:
-            individual.append({"name": "json_wallbangs", "value": f"{int(wallbangs)}", "explanation": "Убийств через стены выше 2"})
-        patterns = individual
+            patterns.append({"name": "json_wallbangs", "value": f"{int(wallbangs)}", "explanation": "Убийств через стены выше 2"})
 
     return patterns[:n]
 
@@ -403,24 +417,48 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
         X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
         X_scaled = scaler.transform(X)
 
-        # Predict
-        proba = model.predict_proba(X_scaled)[:, 1]
+        # Predict — ensemble or single model
+        model_type = artifact.get("type", "single")
+        if model_type == "ensemble":
+            # Supervised probability
+            sup_proba = model.predict_proba(X_scaled)[:, 1]
+            # Anomaly risk
+            iso_model = artifact["iso_model"]
+            iso_scores = iso_model.decision_function(X_scaled)
+            iso_risk = (1 - (iso_scores - iso_scores.min()) / (iso_scores.max() - iso_scores.min() + 1e-8))
+            # Weighted ensemble
+            w_sup = artifact["supervised_weight"]
+            w_anom = artifact["anomaly_weight"]
+            proba = w_sup * sup_proba + w_anom * iso_risk
+        else:
+            proba = model.predict_proba(X_scaled)[:, 1]
+
         risk_scores = (proba * 100).astype(int)
         flags = proba >= threshold
 
-        # Get XGBoost booster for SHAP contributions
+        # Get booster for SHAP contributions
         try:
-            booster = model.estimator.get_booster()
+            if model_type == "ensemble":
+                booster = model.estimator.get_booster()
+            else:
+                booster = model.estimator.get_booster()
         except Exception:
             booster = None
+
+        # Build name lookup from tick_df
+        name_map = {}
+        if "name" in tick_df.columns and "steamid" in tick_df.columns:
+            name_map = dict(zip(tick_df["steamid"].astype(str), tick_df["name"]))
 
         # Build player results
         players = []
         for i, row in feats.iterrows():
             top_factors = get_top_factors(row, feature_names, FEATURE_EXPLANATIONS)
             shap = get_shap_contributions(row, feature_names, scaler, booster) if booster else {"bias": 0, "positive": [], "negative": []}
+            sid = str(row["steamid"])
             players.append({
-                "steamid": row["steamid"],
+                "steamid": sid,
+                "name": name_map.get(sid, sid),
                 "risk_score": int(risk_scores[i]),
                 "flagged": bool(flags[i]),
                 "confidence": float(proba[i]),
@@ -433,6 +471,7 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
                     "mouse_mag_mean": round(row.get("aim_mouse_mag_mean", 0), 2),
                     "vel_mean": round(row.get("move_vel_mean", 0), 1),
                     "fire_rate": round(row.get("btn_fire_rate", 0), 4),
+                    "wallbangs": int(row.get("json_wallbangs", 0)),
                 },
                 "top_factors": top_factors,
                 "shap": shap,

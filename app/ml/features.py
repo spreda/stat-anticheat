@@ -181,10 +181,24 @@ def extract_json_features(events: dict) -> pd.DataFrame:
     """Extract features from JSON event data per player."""
     features = {}
 
+    def _safe_steamid(val) -> str | None:
+        if val is None:
+            return None
+        if isinstance(val, float):
+            # NaN check (NaN is float)
+            import math
+            if math.isnan(val):
+                return None
+            return str(int(val))
+        if isinstance(val, str):
+            return val if val.startswith("Player_") else str(val)
+        # numeric (int, numpy int)
+        return str(int(val))
+
     deaths = events.get("player_death", [])
     for d in deaths:
-        attacker = d.get("attacker_steamid")
-        if attacker and attacker.startswith("Player_"):
+        attacker = _safe_steamid(d.get("attacker_steamid"))
+        if attacker:
             if attacker not in features:
                 features[attacker] = {"json_kills": 0, "json_headshots": 0, "json_wallbangs": 0}
             features[attacker]["json_kills"] += 1
@@ -193,8 +207,8 @@ def extract_json_features(events: dict) -> pd.DataFrame:
 
     bullets = events.get("bullet_damage", [])
     for b in bullets:
-        attacker = b.get("attacker_steamid")
-        if attacker and attacker.startswith("Player_"):
+        attacker = _safe_steamid(b.get("attacker_steamid"))
+        if attacker:
             if attacker not in features:
                 features[attacker] = {"json_kills": 0, "json_headshots": 0, "json_wallbangs": 0}
             if b.get("num_penetrations", 0) > 0:

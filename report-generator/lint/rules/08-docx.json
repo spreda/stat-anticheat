@@ -1,0 +1,60 @@
+[
+  {
+    "id": "paragraph-indent",
+    "type": "docx",
+    "kind": "paragraph_indents",
+    "level": "error",
+    "expected_indent_cm": 1.25,
+    "message": "Body Text chain styles must inherit Normal's first-line indent, not override to 0."
+  },
+  {
+    "id": "heading-indent",
+    "type": "docx",
+    "kind": "heading_indents",
+    "level": "error",
+    "expected_indent_cm": 1.25,
+    "message": "Heading styles must have explicit first_line_indent=1.25."
+  },
+  {
+    "id": "list-indent",
+    "type": "docx",
+    "kind": "list_indents",
+    "level": "error",
+    "expected_left_cm": 2.00,
+    "expected_hanging_cm": 0.75,
+    "expected_tab_pos_cm": 1.25,
+    "message": "List numbering: left={left_cm}cm, hanging={hanging_cm}cm, tab at {tab_cm}cm."
+  },
+  {
+    "id": "table-style",
+    "type": "docx",
+    "kind": "table_style",
+    "level": "error",
+    "expected_font_size": 12,
+    "expected_alignment": "JUSTIFY",
+    "expected_first_indent_cm": 0,
+    "message": "Table style must have font_size=12, alignment=JUSTIFY, first_line_indent=0."
+  },
+  {
+    "id": "no-italic-heading",
+    "type": "docx",
+    "kind": "no_italic_in_heading",
+    "level": "error",
+    "message": "Heading style '{style_id}' has italic (<w:i> or <w:iCs>). Strip italic from all heading, caption, title styles."
+  },
+  {
+    "id": "no-italic-caption",
+    "type": "docx",
+    "kind": "no_italic_in_caption",
+    "level": "warning",
+    "message": "Caption style has italic (<w:i> or <w:iCs>). Strip italic from caption style."
+  },
+  {
+    "id": "intro-page-count",
+    "type": "docx",
+    "kind": "intro_one_page",
+    "level": "error",
+    "char_width_factor": 0.52,
+    "message": "Введение не умещается на одной странице (следующий заголовок на странице {page}). Сократи текст введения."
+  }
+]
