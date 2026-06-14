@@ -94,6 +94,17 @@ def _parse_velocity(series: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]
     return vx, vy, vz
 
 
+def _downcast(df: pd.DataFrame) -> pd.DataFrame:
+    """Downcast numeric columns to reduce memory (float64→float32, int64→int32)."""
+    for col in df.columns:
+        col_type = df[col].dtype
+        if col_type == "float64":
+            df[col] = pd.to_numeric(df[col], downcast="float")
+        elif col_type == "int64":
+            df[col] = pd.to_numeric(df[col], downcast="integer")
+    return df
+
+
 def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
     """
     Parse a CS2 .dem file into tick DataFrame and events dict.
@@ -230,10 +241,11 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
         if col not in df.columns:
             df[col] = 0
 
+    df = _downcast(df)
     return df, events
 
 
-def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str, str]:
+def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str, str, pd.DataFrame]:
     """
     Parse .dem file and save as parquet + json in a cache directory.
 
@@ -241,7 +253,9 @@ def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str
     -------
     parquet_path : str
     json_path : str
+    tick_df : pd.DataFrame
     """
+    import gc
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -252,8 +266,10 @@ def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str
     json_path = cache_dir / f"{stem}.json"
 
     tick_df.to_parquet(pq_path, index=False)
-    import json
+    import json as _json
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(events, f, ensure_ascii=False, default=str)
+        _json.dump(events, f, ensure_ascii=False, default=str)
 
-    return str(pq_path), str(json_path)
+    del events
+    gc.collect()
+    return str(pq_path), str(json_path), tick_df
