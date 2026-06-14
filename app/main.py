@@ -132,6 +132,7 @@ async def upload_file(
             analyze_match(job_id, match_file_path, events=_evts)
             _log.info("Upload pipeline done job=%s", job_id)
             gc.collect()
+            shutil.rmtree(_job_dir, ignore_errors=True)
         except Exception:
             err_msg = traceback.format_exc()
             _log.error("Upload pipeline failed job=%s\n%s", job_id, err_msg)
@@ -226,7 +227,7 @@ async def analyze_dataset(
     create_job(job_id, str(file_path), f"dataset:{folder}/{idx}")
 
     def _analyze_and_cache():
-        import gc, json, traceback, logging, pandas as pd
+        import gc, json, traceback, logging, pandas as pd, threading
         _log = logging.getLogger(__name__)
         _log.info("Analyzing dataset match job=%s folder=%s idx=%s", job_id, folder, idx)
         try:
@@ -239,7 +240,27 @@ async def analyze_dataset(
                 events = {"cheaters": []}
 
             _log.info("Dataset read parquet job=%s path=%s", job_id, file_path)
-            tick_df = pd.read_parquet(file_path)
+            import threading
+            _read_result = [None]
+            _read_error = [None]
+            _done = [False]
+
+            def _read_parquet():
+                try:
+                    _read_result[0] = pd.read_parquet(file_path)
+                except Exception as e:
+                    _read_error[0] = e
+                finally:
+                    _done[0] = True
+
+            _t = threading.Thread(target=_read_parquet, daemon=True)
+            _t.start()
+            _t.join(timeout=120)
+            if not _done[0]:
+                raise TimeoutError(f"Чтение файла {file_path} превысило 120 секунд. Файл повреждён или слишком большой.")
+            if _read_error[0]:
+                raise _read_error[0]
+            tick_df = _read_result[0]
             _log.info("Dataset downcast job=%s rows=%d cols=%d", job_id, len(tick_df), len(tick_df.columns))
             _downcast(tick_df)
             _log.info("Dataset extract match info job=%s", job_id)
@@ -370,6 +391,7 @@ async def analyze_demo(
             _log.info("Demo pipeline done job=%s", job_id)
             del tick_df
             gc.collect()
+            shutil.rmtree(job_dir, ignore_errors=True)
         except Exception:
             err_msg = traceback.format_exc()
             _log.error("Demo pipeline failed job=%s\n%s", job_id, err_msg)
