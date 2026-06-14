@@ -245,7 +245,7 @@ def parse_dem(filepath: str | Path) -> Tuple[pd.DataFrame, dict]:
     return df, events
 
 
-def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str, str, pd.DataFrame]:
+def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str, str]:
     """
     Parse .dem file and save as parquet + json in a cache directory.
 
@@ -253,7 +253,6 @@ def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str
     -------
     parquet_path : str
     json_path : str
-    tick_df : pd.DataFrame
     """
     import gc
     cache_dir = Path(cache_dir)
@@ -270,6 +269,6 @@ def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str
     with open(json_path, "w", encoding="utf-8") as f:
         _json.dump(events, f, ensure_ascii=False, default=str)
 
-    del events
+    del tick_df, events
     gc.collect()
-    return str(pq_path), str(json_path), tick_df
+    return str(pq_path), str(json_path)

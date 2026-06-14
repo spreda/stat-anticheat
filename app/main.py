@@ -101,8 +101,7 @@ async def upload_file(
     # Convert .dem → .parquet + .json if needed
     if file.filename.endswith(".dem"):
         try:
-            pq_path, json_path, _tick_df = parse_dem_to_cache(uploaded_path, job_dir)
-            del _tick_df
+            pq_path, json_path = parse_dem_to_cache(uploaded_path, job_dir)
         except Exception as e:
             import shutil
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -342,18 +341,19 @@ async def analyze_demo(
     job_dir = UPLOADS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
-    # Convert .dem → parquet + json (keep tick_df, pass to background task to avoid re-read)
+    # Convert .dem → parquet + json
     try:
-        pq_path, json_path, tick_df = parse_dem_to_cache(demo_path, job_dir)
+        pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
     except Exception as e:
         import shutil
         shutil.rmtree(job_dir, ignore_errors=True)
         return JSONResponse({"error": f"Не удалось распарсить .dem файл: {e}"}, status_code=422)
     create_job(job_id, pq_path, f"demo:{filename}")
 
-    import gc
-    def _analyze(tick_df=tick_df):
+    def _analyze():
+        import gc
         import traceback
+        import pandas as pd
         _log = logging.getLogger(__name__)
         _log.info("Analyzing demo job=%s file=%s", job_id, filename)
         try:
@@ -364,6 +364,7 @@ async def analyze_demo(
             except Exception:
                 events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
 
+            tick_df = pd.read_parquet(pq_path)
             match_info = extract_match_info(tick_df, events, "matches", filename)
             analyze_match(job_id, pq_path, events=events, match_info=match_info, tick_df=tick_df)
             _log.info("Analysis done job=%s", job_id)
@@ -375,8 +376,6 @@ async def analyze_demo(
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     background_tasks.add_task(_analyze)
-    del tick_df
-    gc.collect()
     return RedirectResponse(url=f"/report-demo/{filename}?job={job_id}")
 
 
