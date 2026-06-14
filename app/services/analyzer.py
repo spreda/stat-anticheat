@@ -12,6 +12,7 @@ import xgboost as xgb
 
 from app.ml.features import build_features, FEATURE_EXPLANATIONS
 from app.db import update_job
+from app.ml.dem_parser import _downcast
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +391,7 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
     try:
         if tick_df is None:
             tick_df = pd.read_parquet(file_path)
+            _downcast(tick_df)
         if events is None:
             events = {"cheaters": []}
 

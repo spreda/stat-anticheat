@@ -14,7 +14,7 @@ from app.services.analyzer import analyze_match, extract_match_info, load_model
 from app.services.dataset_browser import list_all_matches, get_match_info, list_demo_matches
 from app.services.cache import load_cached, save_cached
 from app.db import init_db, get_job, create_job, update_job, get_job_stats, get_active_job, reset_stale_jobs
-from app.ml.dem_parser import parse_dem_to_cache
+from app.ml.dem_parser import parse_dem_to_cache, _downcast
 
 BASE_DIR = Path(__file__).parent
 UPLOADS_DIR = BASE_DIR.parent / "uploads"
@@ -237,6 +237,7 @@ async def analyze_dataset(
                 events = {"cheaters": []}
 
             tick_df = pd.read_parquet(file_path)
+            _downcast(tick_df)
             match_info = extract_match_info(tick_df, events, folder, idx)
             analyze_match(job_id, str(file_path), events=events, match_info=match_info, tick_df=tick_df)
             _log.info("Dataset analysis done job=%s", job_id)
