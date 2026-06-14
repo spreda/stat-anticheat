@@ -395,6 +395,22 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
         if events is None:
             events = {"cheaters": []}
 
+        # Strip to only columns needed for feature computation (dataset files
+        # can have 200+ columns; sorting/groupbying all of them is extremely slow).
+        _needed = {"steamid", "name", "tick",
+            "pitch", "yaw", "usercmd_mouse_dx", "usercmd_mouse_dy", "fov", "is_scoped",
+            "kills_total", "deaths_total", "headshot_kills_total", "damage_total",
+            "shots_fired", "accuracy_penalty", "ace_rounds_total", "4k_rounds_total", "3k_rounds_total",
+            "velocity", "velocity_X", "velocity_Y", "velocity_Z",
+            "is_airborne", "fall_velo", "duck_amount", "is_walking",
+            "X", "Y", "Z",
+            "FIRE", "RELOAD", "ZOOM",
+            "total_rounds_played", "health", "armor_value", "balance", "score", "mvps", "ping",
+            "map_name", "round"}
+        _present = [c for c in _needed if c in tick_df.columns]
+        tick_df = tick_df[_present]
+        logger.info("analyze_match cols=%d job=%s", len(tick_df.columns), job_id)
+
         # Build features
         feats = build_features(tick_df, events, "unknown")
 
