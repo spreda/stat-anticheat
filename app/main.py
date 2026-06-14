@@ -25,7 +25,15 @@ DATASET_DIR = BASE_DIR.parent / "datasets" / "cs2cd_dataset"
 app = FastAPI(title="CS2 Anti-Cheat Analyzer", version="1.0")
 
 import logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+from logging.handlers import RotatingFileHandler
+
+_log_dir = BASE_DIR.parent / "uploads"
+_log_dir.mkdir(exist_ok=True)
+_log_path = _log_dir / "app.log"
+_handler = RotatingFileHandler(str(_log_path), maxBytes=10*1024*1024, backupCount=3, encoding="utf-8")
+_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger().addHandler(_handler)
+logging.getLogger().setLevel(logging.INFO)
 
 
 @app.exception_handler(Exception)
