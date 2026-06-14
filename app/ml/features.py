@@ -54,15 +54,15 @@ def get_cheater_set(events: dict) -> set:
 
 
 def label_players(df: pl.DataFrame, cheater_set: set, match_folder: str) -> pl.DataFrame:
+    df = df.with_columns(
+        pl.col("steamid").is_in(tuple(cheater_set)).cast(pl.Int64).alias("is_cheater"),
+    )
     label_conf = (
         pl.lit(0.8)
         if match_folder == "no_cheater_present"
         else pl.when(pl.col("is_cheater") == 1).then(1.0).otherwise(0.9)
     )
-    return df.with_columns(
-        pl.col("steamid").is_in(tuple(cheater_set)).cast(pl.Int64).alias("is_cheater"),
-        label_conf.alias("label_confidence"),
-    )
+    return df.with_columns(label_conf.alias("label_confidence"))
 
 
 def compute_aim_features(df: pl.DataFrame) -> pl.DataFrame:
