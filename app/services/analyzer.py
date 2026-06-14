@@ -385,6 +385,7 @@ def get_top_factors(row: pd.Series, feature_names: list, explanations: dict, n: 
 def analyze_match(job_id: str, file_path: str, events: dict | None = None, match_info: dict | None = None, tick_df: pd.DataFrame | None = None):
     """Run analysis on a match file."""
     update_job(job_id, "processing")
+    logger.info("analyze_match start job=%s", job_id)
 
     try:
         if tick_df is None:
@@ -503,6 +504,7 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
             result["match_info"] = match_info
 
         update_job(job_id, "done", json.dumps(result, ensure_ascii=False))
+        logger.info("analyze_match done job=%s players=%d flagged=%d", job_id, len(players), int(flags.sum()))
 
     except Exception as e:
         logger.exception("Analysis failed for job %s", job_id)

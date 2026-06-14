@@ -30,10 +30,15 @@ from logging.handlers import RotatingFileHandler
 _log_dir = BASE_DIR.parent / "uploads"
 _log_dir.mkdir(exist_ok=True)
 _log_path = _log_dir / "app.log"
-_handler = RotatingFileHandler(str(_log_path), maxBytes=10*1024*1024, backupCount=3, encoding="utf-8")
-_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-logging.getLogger().addHandler(_handler)
-logging.getLogger().setLevel(logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        RotatingFileHandler(str(_log_path), maxBytes=10*1024*1024, backupCount=3, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+_logger = logging.getLogger(__name__)
 
 
 @app.exception_handler(Exception)
@@ -65,6 +70,7 @@ def render_template(name: str, context: dict) -> str:
 @app.on_event("startup")
 async def startup():
     init_db()
+    _logger.info("App started, logs → %s", _log_path)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -118,6 +124,8 @@ async def upload_file(
     # Queue analysis — pass events if .dem was converted
     def _run_analysis():
         import traceback
+        _log = logging.getLogger(__name__)
+        _log.info("Analyzing uploaded file job=%s", job_id)
         try:
             _pq_dir = Path(match_file_path).parent
             _json_candidates = list(_pq_dir.glob("*.json"))
@@ -129,8 +137,10 @@ async def upload_file(
                 except Exception:
                     pass
             analyze_match(job_id, str(match_file_path), events=_evts)
+            _log.info("Upload analysis done job=%s", job_id)
         except Exception:
             err_msg = traceback.format_exc()
+            _log.error("Upload analysis failed job=%s\n%s", job_id, err_msg)
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     background_tasks.add_task(_run_analysis)
@@ -224,6 +234,8 @@ async def analyze_dataset(
 
     def _analyze_and_cache():
         import traceback
+        _log = logging.getLogger(__name__)
+        _log.info("Analyzing dataset match job=%s folder=%s idx=%s", job_id, folder, idx)
         try:
             json_path = DATASET_DIR / folder / f"{idx}.json"
             events = {}
@@ -237,6 +249,7 @@ async def analyze_dataset(
             tick_df = pd.read_parquet(file_path)
             match_info = extract_match_info(tick_df, events, folder, idx)
             analyze_match(job_id, str(file_path), events=events, match_info=match_info, tick_df=tick_df)
+            _log.info("Dataset analysis done job=%s", job_id)
             del tick_df
 
             job = get_job(job_id)
@@ -249,6 +262,7 @@ async def analyze_dataset(
                     pass
         except Exception:
             err_msg = traceback.format_exc()
+            _log.error("Dataset analysis failed job=%s\n%s", job_id, err_msg)
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     background_tasks.add_task(_analyze_and_cache)
@@ -340,6 +354,8 @@ async def analyze_demo(
     import gc
     def _analyze(tick_df=tick_df):
         import traceback
+        _log = logging.getLogger(__name__)
+        _log.info("Analyzing demo job=%s file=%s", job_id, filename)
         try:
             events = {}
             try:
@@ -350,10 +366,12 @@ async def analyze_demo(
 
             match_info = extract_match_info(tick_df, events, "matches", filename)
             analyze_match(job_id, pq_path, events=events, match_info=match_info, tick_df=tick_df)
+            _log.info("Analysis done job=%s", job_id)
             del tick_df
             gc.collect()
         except Exception:
             err_msg = traceback.format_exc()
+            _log.error("Analysis failed job=%s\n%s", job_id, err_msg)
             update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     background_tasks.add_task(_analyze)
