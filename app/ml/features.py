@@ -42,7 +42,16 @@ FEATURE_EXPLANATIONS = {
 
 
 def load_match(folder: Path, idx: int) -> tuple[pl.DataFrame, dict]:
-    tick_df = pl.read_parquet(folder / f"{idx}.parquet")
+    schema = pl.read_parquet_schema(folder / f"{idx}.parquet")
+    cols = [c for c in (
+        "steamid", "name", "tick", "pitch", "yaw",
+        "usercmd_mouse_dx", "usercmd_mouse_dy", "fov", "is_scoped",
+        "kills_total", "deaths_total", "headshot_kills_total", "damage_total",
+        "shots_fired", "ace_rounds_total", "4k_rounds_total", "3k_rounds_total",
+        "velocity", "is_airborne", "fall_velo", "duck_amount", "is_walking",
+        "FIRE", "RELOAD", "ZOOM", "total_rounds_played", "map_name", "round",
+    ) if c in schema]
+    tick_df = pl.read_parquet(folder / f"{idx}.parquet", columns=cols) if cols else pl.read_parquet(folder / f"{idx}.parquet")
     with open(folder / f"{idx}.json", "r") as f:
         events = json.load(f)
     return tick_df, events

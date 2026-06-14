@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
 # Columns to read from parquet — only what build_features() + extract_match_info() need.
+# Some columns (name, map_name, round) may not exist in dataset parquets — filtered at read time.
 PARQUET_READ_COLS = [
     "steamid", "name", "tick",
     "pitch", "yaw", "usercmd_mouse_dx", "usercmd_mouse_dy", "fov", "is_scoped",
@@ -27,6 +28,13 @@ PARQUET_READ_COLS = [
     "FIRE", "RELOAD", "ZOOM",
     "total_rounds_played", "map_name", "round",
 ]
+
+
+def read_tick_data(file_path: str) -> pl.DataFrame:
+    """Read parquet with only the columns that exist in the file."""
+    schema = pl.read_parquet_schema(file_path)
+    available = [c for c in PARQUET_READ_COLS if c in schema]
+    return pl.read_parquet(file_path, columns=available)
 
 FEATURE_DISPLAY_NAMES = {
     "aim_pitch_delta_mean": "Наклон прицела (mean)",
@@ -369,7 +377,7 @@ def analyze_match(job_id: str, file_path: str, events: dict | None = None, match
 
     try:
         if tick_df is None:
-            tick_df = pl.read_parquet(file_path, columns=PARQUET_READ_COLS)
+            tick_df = read_tick_data(file_path)
         if events is None:
             events = {"cheaters": []}
 

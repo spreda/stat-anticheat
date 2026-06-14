@@ -10,7 +10,7 @@ import uuid
 import json
 from datetime import datetime
 
-from app.services.analyzer import analyze_match, extract_match_info, load_model, PARQUET_READ_COLS
+from app.services.analyzer import analyze_match, extract_match_info, load_model, PARQUET_READ_COLS, read_tick_data
 from app.services.dataset_browser import list_all_matches, get_match_info, list_demo_matches
 from app.services.cache import load_cached, save_cached
 from app.db import init_db, get_job, create_job, update_job, get_job_stats, get_active_job, reset_stale_jobs
@@ -236,7 +236,7 @@ async def analyze_dataset(
     create_job(job_id, str(file_path), f"dataset:{folder}/{idx}")
 
     def _analyze_and_cache():
-        import gc, json, traceback, logging, threading, polars as pl
+        import gc, json, traceback, logging, threading
         _log = logging.getLogger(__name__)
         with _ANALYSIS_SEM:
             _log.info("Analyzing dataset match job=%s folder=%s idx=%s", job_id, folder, idx)
@@ -256,7 +256,7 @@ async def analyze_dataset(
 
                 def _read_parquet():
                     try:
-                        _read_result[0] = pl.read_parquet(file_path, columns=PARQUET_READ_COLS)
+                        _read_result[0] = read_tick_data(str(file_path))
                     except Exception as e:
                         _read_error[0] = e
                     finally:
@@ -376,7 +376,7 @@ async def analyze_demo(
     create_job(job_id, "", f"demo:{filename}")
 
     def _full_pipeline():
-        import gc, json, traceback, logging, shutil, polars as pl
+        import gc, json, traceback, logging, shutil
         _log = logging.getLogger(__name__)
         with _ANALYSIS_SEM:
             _log.info("Demo pipeline start job=%s file=%s", job_id, filename)
@@ -393,7 +393,7 @@ async def analyze_demo(
                     events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
 
                 _log.info("Demo read parquet job=%s", job_id)
-                tick_df = pl.read_parquet(pq_path, columns=PARQUET_READ_COLS)
+                tick_df = read_tick_data(pq_path)
                 _log.info("Demo extract match info job=%s", job_id)
                 match_info = extract_match_info(tick_df, events, "matches", filename)
                 _log.info("Demo analyze match job=%s", job_id)
