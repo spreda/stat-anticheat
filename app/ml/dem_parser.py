@@ -245,6 +245,9 @@ def _get_dem_cache() -> Path:
     if _DEM_CACHE_DIR is None:
         _DEM_CACHE_DIR = Path(__file__).parent.parent.parent / "uploads" / ".dem_cache"
         _DEM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        # Clean stale .tmp files from interrupted writes
+        for f in _DEM_CACHE_DIR.glob("*.tmp.*"):
+            f.unlink(missing_ok=True)
     return _DEM_CACHE_DIR
 
 
@@ -278,11 +281,15 @@ def parse_dem_to_cache(filepath: str | Path, cache_dir: str | Path) -> Tuple[str
 
     tick_df, events = parse_dem(filepath)
 
-    # Save to shared cache
-    tick_df.to_parquet(shared_pq, index=False)
+    # Atomically write to shared cache (temp file + rename to avoid partial writes)
+    _tmp_pq = shared / f"{stem}.tmp.parquet"
+    _tmp_json = shared / f"{stem}.tmp.json"
+    tick_df.to_parquet(_tmp_pq, index=False)
     import json as _json
-    with open(shared_json, "w", encoding="utf-8") as f:
+    with open(_tmp_json, "w", encoding="utf-8") as f:
         _json.dump(events, f, ensure_ascii=False, default=str)
+    _tmp_pq.rename(shared_pq)
+    _tmp_json.rename(shared_json)
 
     # Also save to job dir
     pq_path = cache_dir / f"{stem}.parquet"

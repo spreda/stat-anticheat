@@ -26,7 +26,11 @@ app = FastAPI(title="CS2 Anti-Cheat Analyzer", version="1.0")
 
 import asyncio
 import logging
+import threading
 from logging.handlers import RotatingFileHandler
+
+# Limit concurrent background analyses to prevent OOM on low-RAM VMs.
+_ANALYSIS_SEM = threading.Semaphore(2)
 
 _log_dir = BASE_DIR.parent / "uploads"
 _log_dir.mkdir(exist_ok=True)
@@ -104,40 +108,41 @@ async def upload_file(
         import gc, json, os, logging, traceback, shutil, pandas as pd
         from pathlib import Path
         _log = logging.getLogger(__name__)
-        _log.info("Upload pipeline start job=%s file=%s", job_id, filename)
-        try:
-            _job_dir = Path(uploaded_path).parent
-            if filename.endswith(".dem"):
-                _log.info("Upload parse dem job=%s", job_id)
-                pq_path, _ = parse_dem_to_cache(uploaded_path, _job_dir)
-                match_file_path = pq_path
-            else:
-                match_file_path = str(_job_dir / "match.parquet")
-                os.rename(uploaded_path, match_file_path)
+        with _ANALYSIS_SEM:
+            _log.info("Upload pipeline start job=%s file=%s", job_id, filename)
+            try:
+                _job_dir = Path(uploaded_path).parent
+                if filename.endswith(".dem"):
+                    _log.info("Upload parse dem job=%s", job_id)
+                    pq_path, _ = parse_dem_to_cache(uploaded_path, _job_dir)
+                    match_file_path = pq_path
+                else:
+                    match_file_path = str(_job_dir / "match.parquet")
+                    os.rename(uploaded_path, match_file_path)
 
-            meta_path = _job_dir / "metadata.json"
-            with open(meta_path, "w") as f:
-                json.dump({"original_name": filename, "uploaded_at": datetime.utcnow().isoformat(), "user_metadata": {}}, f)
+                meta_path = _job_dir / "metadata.json"
+                with open(meta_path, "w") as f:
+                    json.dump({"original_name": filename, "uploaded_at": datetime.utcnow().isoformat(), "user_metadata": {}}, f)
 
-            _json_candidates = list(_job_dir.glob("*.json"))
-            _evts = None
-            if _json_candidates:
-                try:
-                    with open(_json_candidates[0], "r", encoding="utf-8") as f:
-                        _evts = json.load(f)
-                except Exception:
-                    pass
+                _json_candidates = list(_job_dir.glob("*.json"))
+                _evts = None
+                if _json_candidates:
+                    try:
+                        with open(_json_candidates[0], "r", encoding="utf-8") as f:
+                            _evts = json.load(f)
+                    except Exception:
+                        pass
 
-            _log.info("Upload analyze job=%s", job_id)
-            analyze_match(job_id, match_file_path, events=_evts)
-            _log.info("Upload pipeline done job=%s", job_id)
-            gc.collect()
-            shutil.rmtree(_job_dir, ignore_errors=True)
-        except Exception:
-            err_msg = traceback.format_exc()
-            _log.error("Upload pipeline failed job=%s\n%s", job_id, err_msg)
-            update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
-            shutil.rmtree(_job_dir, ignore_errors=True)
+                _log.info("Upload analyze job=%s", job_id)
+                analyze_match(job_id, match_file_path, events=_evts)
+                _log.info("Upload pipeline done job=%s", job_id)
+                gc.collect()
+                shutil.rmtree(_job_dir, ignore_errors=True)
+            except Exception:
+                err_msg = traceback.format_exc()
+                _log.error("Upload pipeline failed job=%s\n%s", job_id, err_msg)
+                update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
+                shutil.rmtree(_job_dir, ignore_errors=True)
 
     asyncio.create_task(asyncio.to_thread(_run_upload_pipeline))
     return {"job_id": job_id, "status": "pending"}
@@ -219,6 +224,10 @@ async def analyze_dataset(
     if cached:
         return RedirectResponse(url=f"/report-dataset/{folder}/{idx}")
 
+    existing = get_active_job(f"dataset:{folder}/{idx}")
+    if existing:
+        return RedirectResponse(url=f"/report-dataset/{folder}/{idx}?job={existing['id']}")
+
     job_id = str(uuid.uuid4())
     file_path = DATASET_DIR / folder / f"{idx}.parquet"
     if not file_path.exists():
@@ -227,63 +236,63 @@ async def analyze_dataset(
     create_job(job_id, str(file_path), f"dataset:{folder}/{idx}")
 
     def _analyze_and_cache():
-        import gc, json, traceback, logging, pandas as pd, threading
+        import gc, json, traceback, logging, pandas as pd
         _log = logging.getLogger(__name__)
-        _log.info("Analyzing dataset match job=%s folder=%s idx=%s", job_id, folder, idx)
-        try:
-            json_path = DATASET_DIR / folder / f"{idx}.json"
-            events = {}
+        with _ANALYSIS_SEM:
+            _log.info("Analyzing dataset match job=%s folder=%s idx=%s", job_id, folder, idx)
             try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    events = json.load(f)
-            except Exception:
-                events = {"cheaters": []}
-
-            _log.info("Dataset read parquet job=%s path=%s", job_id, file_path)
-            import threading
-            _read_result = [None]
-            _read_error = [None]
-            _done = [False]
-
-            def _read_parquet():
+                json_path = DATASET_DIR / folder / f"{idx}.json"
+                events = {}
                 try:
-                    _read_result[0] = pd.read_parquet(file_path)
-                except Exception as e:
-                    _read_error[0] = e
-                finally:
-                    _done[0] = True
-
-            _t = threading.Thread(target=_read_parquet, daemon=True)
-            _t.start()
-            _t.join(timeout=120)
-            if not _done[0]:
-                raise TimeoutError(f"Чтение файла {file_path} превысило 120 секунд. Файл повреждён или слишком большой.")
-            if _read_error[0]:
-                raise _read_error[0]
-            tick_df = _read_result[0]
-            _log.info("Dataset downcast job=%s rows=%d cols=%d", job_id, len(tick_df), len(tick_df.columns))
-            _downcast(tick_df)
-            _log.info("Dataset extract match info job=%s", job_id)
-            match_info = extract_match_info(tick_df, events, folder, idx)
-            _log.info("Dataset analyze match job=%s", job_id)
-            analyze_match(job_id, str(file_path), events=events, match_info=match_info, tick_df=tick_df)
-            _log.info("Dataset analysis done job=%s", job_id)
-            del tick_df
-            gc.collect()
-
-            job = get_job(job_id)
-            if job and job.get("result"):
-                try:
-                    result = json.loads(job["result"])
-                    if result.get("status") == "done":
-                        _log.info("Dataset cache result job=%s", job_id)
-                        save_cached(folder, idx, result)
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        events = json.load(f)
                 except Exception:
-                    pass
-        except Exception:
-            err_msg = traceback.format_exc()
-            _log.error("Dataset analysis failed job=%s\n%s", job_id, err_msg)
-            update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
+                    events = {"cheaters": []}
+
+                _log.info("Dataset read parquet job=%s path=%s", job_id, file_path)
+                _read_result = [None]
+                _read_error = [None]
+                _done = [False]
+
+                def _read_parquet():
+                    try:
+                        _read_result[0] = pd.read_parquet(file_path)
+                    except Exception as e:
+                        _read_error[0] = e
+                    finally:
+                        _done[0] = True
+
+                _t = threading.Thread(target=_read_parquet, daemon=True)
+                _t.start()
+                _t.join(timeout=120)
+                if not _done[0]:
+                    raise TimeoutError(f"Чтение файла {file_path} превысило 120 секунд. Файл повреждён или слишком большой.")
+                if _read_error[0]:
+                    raise _read_error[0]
+                tick_df = _read_result[0]
+                _log.info("Dataset downcast job=%s rows=%d cols=%d", job_id, len(tick_df), len(tick_df.columns))
+                _downcast(tick_df)
+                _log.info("Dataset extract match info job=%s", job_id)
+                match_info = extract_match_info(tick_df, events, folder, idx)
+                _log.info("Dataset analyze match job=%s", job_id)
+                analyze_match(job_id, str(file_path), events=events, match_info=match_info, tick_df=tick_df)
+                _log.info("Dataset analysis done job=%s", job_id)
+                del tick_df
+                gc.collect()
+
+                job = get_job(job_id)
+                if job and job.get("result"):
+                    try:
+                        result = json.loads(job["result"])
+                        if result.get("status") == "done":
+                            _log.info("Dataset cache result job=%s", job_id)
+                            save_cached(folder, idx, result)
+                    except Exception:
+                        pass
+            except Exception:
+                err_msg = traceback.format_exc()
+                _log.error("Dataset analysis failed job=%s\n%s", job_id, err_msg)
+                update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
 
     asyncio.create_task(asyncio.to_thread(_analyze_and_cache))
     return RedirectResponse(url=f"/report-dataset/{folder}/{idx}?job={job_id}")
@@ -369,34 +378,35 @@ async def analyze_demo(
     def _full_pipeline():
         import gc, json, traceback, logging, pandas as pd, shutil
         _log = logging.getLogger(__name__)
-        _log.info("Demo pipeline start job=%s file=%s", job_id, filename)
-        try:
-            _log.info("Demo parse to cache job=%s", job_id)
-            pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
-            update_job(job_id, "pending", json.dumps({"parquet": pq_path}))
-
-            events = {}
+        with _ANALYSIS_SEM:
+            _log.info("Demo pipeline start job=%s file=%s", job_id, filename)
             try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    events = json.load(f)
-            except Exception:
-                events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
+                _log.info("Demo parse to cache job=%s", job_id)
+                pq_path, json_path = parse_dem_to_cache(demo_path, job_dir)
+                update_job(job_id, "pending", json.dumps({"parquet": pq_path}))
 
-            _log.info("Demo read parquet job=%s", job_id)
-            tick_df = pd.read_parquet(pq_path)
-            _log.info("Demo extract match info job=%s", job_id)
-            match_info = extract_match_info(tick_df, events, "matches", filename)
-            _log.info("Demo analyze match job=%s", job_id)
-            analyze_match(job_id, pq_path, events=events, match_info=match_info, tick_df=tick_df)
-            _log.info("Demo pipeline done job=%s", job_id)
-            del tick_df
-            gc.collect()
-            shutil.rmtree(job_dir, ignore_errors=True)
-        except Exception:
-            err_msg = traceback.format_exc()
-            _log.error("Demo pipeline failed job=%s\n%s", job_id, err_msg)
-            update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
-            shutil.rmtree(job_dir, ignore_errors=True)
+                events = {}
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        events = json.load(f)
+                except Exception:
+                    events = {"player_death": [], "round_freeze_end": [], "cheaters": []}
+
+                _log.info("Demo read parquet job=%s", job_id)
+                tick_df = pd.read_parquet(pq_path)
+                _log.info("Demo extract match info job=%s", job_id)
+                match_info = extract_match_info(tick_df, events, "matches", filename)
+                _log.info("Demo analyze match job=%s", job_id)
+                analyze_match(job_id, pq_path, events=events, match_info=match_info, tick_df=tick_df)
+                _log.info("Demo pipeline done job=%s", job_id)
+                del tick_df
+                gc.collect()
+                shutil.rmtree(job_dir, ignore_errors=True)
+            except Exception:
+                err_msg = traceback.format_exc()
+                _log.error("Demo pipeline failed job=%s\n%s", job_id, err_msg)
+                update_job(job_id, "error", json.dumps({"status": "error", "message": f"Ошибка анализа: {err_msg}"}))
+                shutil.rmtree(job_dir, ignore_errors=True)
 
     asyncio.create_task(asyncio.to_thread(_full_pipeline))
     return RedirectResponse(url=f"/report-demo/{filename}?job={job_id}")
